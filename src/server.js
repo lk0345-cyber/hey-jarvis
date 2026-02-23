@@ -77,14 +77,15 @@ function buildConfig() {
     },
     ...(telegramToken ? {
       channels: {
-        telegram: {
-          enabled: true,
-          dmPolicy: "pairing",
-          botToken: telegramToken,
-          groupPolicy: "allowlist",
-          streaming: "off"
-        }
-      },
+  telegram: {
+    enabled: true,
+    dmPolicy: "pairing",
+    botToken: telegramToken,
+    groupPolicy: "allowlist",
+    streaming: "off",
+    owners: ["8737921782"],
+  }
+},
       plugins: {
         entries: {
           telegram: { enabled: true }
