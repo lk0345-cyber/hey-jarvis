@@ -76,16 +76,17 @@ function buildConfig() {
       dmScope: "per-channel-peer"
     },
     ...(telegramToken ? {
+      
       channels: {
-  telegram: {
-    enabled: true,
-    dmPolicy: "pairing",
-    botToken: telegramToken,
-    groupPolicy: "allowlist",
-    streaming: "off",
-    owners: ["8737921782"],
-  }
-},
+        telegram: {
+          enabled: true,
+          dmPolicy: "pairing",
+          botToken: telegramToken,
+          groupPolicy: "allowlist",
+          streaming: "off",
+          owners: ["8737921782"],
+        }
+      },
       plugins: {
         entries: {
           telegram: { enabled: true }
