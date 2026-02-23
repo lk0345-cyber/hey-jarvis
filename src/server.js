@@ -24,24 +24,38 @@ function buildConfig() {
   const apiKey = process.env.FIREWORKS_API_KEY;
   if (!apiKey) return null;
 
+  const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+  const gatewayToken = process.env.GATEWAY_AUTH_TOKEN;
+
   return {
     agents: {
       defaults: {
         model: {
-          primary:
-            "custom-api-fireworks-ai/accounts/fireworks/models/glm-5",
+          primary: "custom-api-fireworks-ai/accounts/fireworks/models/glm-5",
         },
+        models: {
+          "custom-api-fireworks-ai/accounts/fireworks/models/glm-5": {}
+        },
+        workspace: "/data/workspace",
+        compaction: { mode: "safeguard" },
+        maxConcurrent: 4,
+        subagents: { maxConcurrent: 8 }
       },
     },
     models: {
+      mode: "merge",
       providers: {
         "custom-api-fireworks-ai": {
           baseUrl: "https://api.fireworks.ai/inference/v1",
           apiKey: apiKey,
+          api: "openai-completions",
           models: [
             {
               id: "accounts/fireworks/models/glm-5",
-              name: "GLM-5 (Fireworks)",
+              name: "accounts/fireworks/models/glm-5 (Custom Provider)",
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               contextWindow: 200000,
               maxTokens: 8192,
             },
@@ -49,10 +63,49 @@ function buildConfig() {
         },
       },
     },
+    messages: {
+      ackReactionScope: "group-mentions"
+    },
+    commands: {
+      native: "auto",
+      nativeSkills: "auto",
+      restart: true,
+      ownerDisplay: "raw"
+    },
+    session: {
+      dmScope: "per-channel-peer"
+    },
+    ...(telegramToken ? {
+      channels: {
+        telegram: {
+          enabled: true,
+          dmPolicy: "pairing",
+          botToken: telegramToken,
+          groupPolicy: "allowlist",
+          streaming: "off"
+        }
+      },
+      plugins: {
+        entries: {
+          telegram: { enabled: true }
+        }
+      }
+    } : {}),
     gateway: {
-      mode: "local",
       port: GATEWAY_PORT,
+      mode: "local",
       bind: "loopback",
+      ...(gatewayToken ? {
+        auth: {
+          mode: "token",
+          token: gatewayToken
+        }
+      } : {}),
+      trustedProxies: ["0.0.0.0/0"],
+      tailscale: {
+        mode: "off",
+        resetOnExit: false
+      }
     },
   };
 }
