@@ -84,7 +84,6 @@ function buildConfig() {
           botToken: telegramToken,
           groupPolicy: "allowlist",
           streaming: "off",
-          owners: ["8737921782"],
         }
       },
       plugins: {
