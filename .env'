@@ -1,0 +1,4 @@
+# === Required ===
+FIREWORKS_API_KEY=fw_MXNsRdFHApGfiFCur76mqu
+SETUP_PASSWORD=changeme
+PORT=8080

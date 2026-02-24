@@ -95,7 +95,7 @@ function buildConfig() {
     gateway: {
       port: GATEWAY_PORT,
       mode: "local",
-      bind: "loopback",
+      bind: "lan",
       ...(gatewayToken ? {
         auth: {
           mode: "token",
@@ -145,7 +145,7 @@ function startGateway() {
       "--port",
       String(GATEWAY_PORT),
       "--bind",
-      "loopback",
+      "lan",
       "--allow-unconfigured",
     ],
     {
