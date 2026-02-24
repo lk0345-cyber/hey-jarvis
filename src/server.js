@@ -76,7 +76,6 @@ function buildConfig() {
       dmScope: "per-channel-peer"
     },
     ...(telegramToken ? {
-      
       channels: {
         telegram: {
           enabled: true,
@@ -96,6 +95,9 @@ function buildConfig() {
       port: GATEWAY_PORT,
       mode: "local",
       bind: "lan",
+      controlUi: {
+        dangerouslyAllowHostHeaderOriginFallback: true
+      },
       ...(gatewayToken ? {
         auth: {
           mode: "token",
@@ -114,7 +116,6 @@ function buildConfig() {
 function ensureConfig() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
 
-  // Try to build config from env vars
   const config = buildConfig();
   if (config) {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
@@ -122,7 +123,6 @@ function ensureConfig() {
     return;
   }
 
-  // Fallback: copy template if no env var
   if (!fs.existsSync(CONFIG_PATH)) {
     const tpl = path.join(__dirname, "..", "openclaw.json");
     if (fs.existsSync(tpl)) {
