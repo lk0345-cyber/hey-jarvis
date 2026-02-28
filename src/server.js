@@ -22,69 +22,22 @@ let gatewayReady = false;
 
 function buildConfig() {
   const apiKey = process.env.FIREWORKS_API_KEY;
-  const copilotToken = process.env.GITHUB_COPILOT_TOKEN;
 
-  if (!apiKey && !copilotToken) return null;
+  if (!apiKey) return null;
 
   const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
   const gatewayToken = process.env.GATEWAY_AUTH_TOKEN;
   const tavilyApiKey = process.env.TAVILY_API_KEY;
 
-  const primaryModel = copilotToken
-    ? "copilot/gpt-4o"
-    : "custom-api-fireworks-ai/accounts/fireworks/models/glm-5";
-
-  const models = {
-    ...(copilotToken ? { "copilot/gpt-4o": {} } : {}),
-    "custom-api-fireworks-ai/accounts/fireworks/models/glm-5": {}
-  };
-
-  const providers = {
-    ...(apiKey ? {
-      "custom-api-fireworks-ai": {
-        baseUrl: "https://api.fireworks.ai/inference/v1",
-        apiKey: apiKey,
-        api: "openai-completions",
-        models: [
-          {
-            id: "accounts/fireworks/models/glm-5",
-            name: "accounts/fireworks/models/glm-5 (Custom Provider)",
-            reasoning: false,
-            input: ["text"],
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 200000,
-            maxTokens: 8192,
-          },
-        ],
-      }
-    } : {}),
-    ...(copilotToken ? {
-      "copilot": {
-        baseUrl: "https://api.githubcopilot.com",
-        apiKey: copilotToken,
-        api: "openai-completions",
-        models: [
-          {
-            id: "gpt-4o",
-            name: "GPT-4o (Copilot)",
-            reasoning: false,
-            input: ["text"],
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 128000,
-            maxTokens: 4096,
-          },
-        ],
-      }
-    } : {}),
-  };
-
   return {
     agents: {
       defaults: {
         model: {
-          primary: primaryModel,
+          primary: "custom-api-fireworks-ai/accounts/fireworks/models/glm-5",
         },
-        models,
+        models: {
+          "custom-api-fireworks-ai/accounts/fireworks/models/glm-5": {}
+        },
         workspace: "/data/workspace",
         compaction: { mode: "safeguard" },
         maxConcurrent: 4,
@@ -93,7 +46,24 @@ function buildConfig() {
     },
     models: {
       mode: "merge",
-      providers,
+      providers: {
+        "custom-api-fireworks-ai": {
+          baseUrl: "https://api.fireworks.ai/inference/v1",
+          apiKey: apiKey,
+          api: "openai-completions",
+          models: [
+            {
+              id: "accounts/fireworks/models/glm-5",
+              name: "accounts/fireworks/models/glm-5 (Custom Provider)",
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 200000,
+              maxTokens: 8192,
+            },
+          ],
+        },
+      },
     },
     messages: {
       ackReactionScope: "group-mentions"
@@ -121,7 +91,7 @@ function buildConfig() {
         entries: {
           telegram: { enabled: true },
           ...(tavilyApiKey ? {
-            "openclaw-tavily": {
+            "tavily": {
               enabled: true,
               config: {
                 apiKey: tavilyApiKey
@@ -135,6 +105,9 @@ function buildConfig() {
       port: GATEWAY_PORT,
       mode: "local",
       bind: "lan",
+      controlUi: {
+        dangerouslyAllowHostHeaderOriginFallback: true
+      },
       ...(gatewayToken ? {
         auth: {
           mode: "token",
