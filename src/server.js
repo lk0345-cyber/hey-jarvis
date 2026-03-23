@@ -1,5 +1,6 @@
 require("dotenv").config();
 
+const { startScheduler } = require("./scheduler");
 const express = require("express");
 const http = require("http");
 const httpProxy = require("http-proxy");
@@ -263,6 +264,7 @@ ensureConfig();
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`[hey-jarvis] Listening on :${PORT}`);
   startGateway();
+  startScheduler();
 });
 
 process.on("SIGTERM", () => {
