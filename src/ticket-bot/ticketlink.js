@@ -35,18 +35,17 @@ async function login(page, config) {
   await page.goto('https://www.ticketlink.co.kr', { waitUntil: 'domcontentloaded' });
   await sleep(1500);
 
-  // 전면 팝업 배너 닫기
-  try {
-    await page.locator('.full_page_pop').waitFor({ state: 'visible', timeout: 3000 });
-    await page.evaluate(() => {
-      const pop = document.querySelector('.full_page_pop');
-      if (pop) pop.style.display = 'none';
-    });
-    log('📢 전면 팝업 닫음');
-  } catch { /* 팝업 없음 */ }
-
-  log('🔐 로그인 버튼 클릭...');
-  await page.locator('a[href*="/login"], a:has-text("로그인")').first().click();
+  // 전면 팝업 배너 및 방해 요소 제거 후 로그인 JS 클릭
+  await page.evaluate(() => {
+    // 전면 팝업 제거
+    document.querySelectorAll('.full_page_pop, .layer_wrap, .dim').forEach(el => el.remove());
+    // 로그인 버튼 JS 클릭
+    const loginEl = Array.from(document.querySelectorAll('a')).find(
+      a => a.textContent.trim() === '로그인'
+    );
+    if (loginEl) loginEl.click();
+  });
+  log('🔐 로그인 클릭 완료');
   await sleep(1000);
 
   await page.locator('a[href*="payco"], button[class*="payco"], img[alt*="PAYCO"]').first().click();
