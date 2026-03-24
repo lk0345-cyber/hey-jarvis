@@ -504,43 +504,27 @@ async function selectSeat(page, config) {
 // 메인 진입점
 // ─────────────────────────────────────────────
 
-async function launchChromeWithCDP() {
-  const { spawn } = require('child_process');
-  const CDP_URL = 'http://localhost:9222';
-
-  // 이미 실행 중인 Chrome에 연결 시도
-  try {
-    const browser = await chromium.connectOverCDP(CDP_URL, { timeout: 2000 });
-    log('🌐 기존 Chrome에 CDP 연결됨');
-    return browser;
-  } catch { /* 실행 중 아님 */ }
-
-  // Chrome을 자동화 플래그 없이 직접 실행 (봇 감지 없음)
-  log('🌐 Chrome 원격 디버깅 모드로 실행 중...');
-  const child = spawn(CHROME_EXE, [
-    '--remote-debugging-port=9222',
-    '--profile-directory=Default',
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--start-maximized',
-  ], { detached: true, stdio: 'ignore' });
-  child.unref();
-
-  // Chrome 시작 대기 (최대 15초)
-  await sleep(3000);
-  for (let i = 0; i < 12; i++) {
-    try {
-      const browser = await chromium.connectOverCDP(CDP_URL, { timeout: 2000 });
-      log('🌐 Chrome CDP 연결 완료');
-      return browser;
-    } catch { await sleep(1000); }
-  }
-  throw new Error('Chrome 시작 실패 — Chrome이 설치되어 있는지 확인해주세요.');
-}
-
 async function runTicketBot(config) {
-  const browser = await launchChromeWithCDP();
-  const context = browser.contexts()[0] || (await browser.newContext());
+  log('🌐 시스템 Chrome 실행...');
+  const browser = await chromium.launch({
+    headless: false,
+    slowMo: 60,
+    executablePath: CHROME_EXE,
+    args: ['--start-maximized', '--disable-blink-features=AutomationControlled'],
+  });
+
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    viewport: { width: 1280, height: 900 },
+  });
+
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    window.close = () => {};
+    window.alert = () => {};
+    window.confirm = () => true;
+  });
+
   const page = await context.newPage();
 
   page.on('dialog', async (dialog) => {
