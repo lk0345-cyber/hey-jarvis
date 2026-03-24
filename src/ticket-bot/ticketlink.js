@@ -29,7 +29,7 @@ function log(msg) {
 
 async function login(page, config) {
   log('🔐 티켓링크 메인 접속...');
-  await page.goto('https://www.ticketlink.co.kr/home', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto('https://www.ticketlink.co.kr/sports', { waitUntil: 'domcontentloaded', timeout: 30000 });
   await sleep(2000);
 
   // 팝업 제거
