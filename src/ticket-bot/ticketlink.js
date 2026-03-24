@@ -31,9 +31,13 @@ function log(msg) {
 // ─────────────────────────────────────────────
 
 async function login(page, config) {
-  log('🔐 티켓링크 로그인 페이지 접속...');
-  await page.goto('https://www.ticketlink.co.kr/auth/signin', { waitUntil: 'domcontentloaded' });
+  log('🔐 티켓링크 메인 접속...');
+  await page.goto('https://www.ticketlink.co.kr', { waitUntil: 'domcontentloaded' });
   await sleep(1500);
+
+  log('🔐 로그인 버튼 클릭...');
+  await page.locator('a[href*="/login"], a:has-text("로그인")').first().click();
+  await sleep(1000);
 
   await page.locator('a[href*="payco"], button[class*="payco"], img[alt*="PAYCO"]').first().click();
 
