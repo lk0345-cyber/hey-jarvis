@@ -3,6 +3,7 @@
 const { chromium } = require('playwright');
 
 const SPORTS_PAGE = 'https://www.ticketlink.co.kr/sports/137/63';
+const RESERVE_BASE = 'https://www.ticketlink.co.kr/reserve/plan/schedule';
 const VENUE_NAME = '대전 한화생명 볼파크';
 
 // ─────────────────────────────────────────────
@@ -26,10 +27,7 @@ async function login(page, config) {
   log('🔐 티켓링크 접속...');
   await page.goto('https://www.ticketlink.co.kr', { waitUntil: 'domcontentloaded' });
 
-  // 우측 상단 로그인 버튼
   await page.locator('a[href*="/login"], button:has-text("로그인")').first().click();
-
-  // PAYCO 로그인 버튼
   await page.locator('a[href*="payco"], button[class*="payco"], img[alt*="PAYCO"]').first().click();
 
   await page.waitForURL('**/payco.com/**', { timeout: 15000 });
@@ -40,24 +38,78 @@ async function login(page, config) {
   await page.locator('input[name="pw"], input[type="password"]').fill(config.paycoPw);
   await page.locator('.btn_login, button[type="submit"]').first().click();
 
-  // 새 기기/브라우저 인증 처리
+  // 새 기기 인증
   try {
     await page.waitForSelector('text=새로운 기기', { timeout: 6000 });
-    log('📲 새 기기 인증 입력 중...');
+    log('📲 새 기기 인증 입력...');
     await page.locator('input[placeholder*="인증"], input[type="number"], input[maxlength="8"]').fill(
       config.verificationCode
     );
     await page.locator('button:has-text("확인")').click();
-  } catch {
-    // 인증 팝업 없음
-  }
+  } catch { /* 인증 없음 */ }
 
   await page.waitForURL('**/ticketlink.co.kr/**', { timeout: 20000 });
   log('✅ 로그인 완료');
 }
 
 // ─────────────────────────────────────────────
-// 정시 대기 (밀리초 정밀)
+// 전략 A: 스포츠 페이지에서 Schedule ID 사전 추출
+// (오픈 전 disabled 버튼에서 data 속성으로 추출)
+// ─────────────────────────────────────────────
+
+async function extractScheduleId(page, targetDate) {
+  log('🔍 Schedule ID 사전 추출 시도...');
+  await page.goto(SPORTS_PAGE, { waitUntil: 'domcontentloaded' });
+
+  const id = await page.evaluate(({ venue, date }) => {
+    // 모든 a/button 요소에서 reserve/plan/schedule URL 탐색
+    const allEls = document.querySelectorAll('a, button, [data-url], [data-href], [onclick]');
+    for (const el of allEls) {
+      const text = el.closest('li, tr, [class*="item"], [class*="row"]')?.textContent || '';
+      if (!text.includes(venue)) continue;
+      if (date && !text.includes(date)) continue;
+
+      // href 직접 포함
+      const href = el.href || el.getAttribute('href') || '';
+      const m = href.match(/\/reserve\/plan\/schedule\/(\d+)/);
+      if (m) return m[1];
+
+      // data 속성
+      for (const attr of ['data-url', 'data-href', 'data-link', 'data-schedule-id', 'data-id']) {
+        const v = el.getAttribute(attr) || '';
+        const dm = v.match(/(\d{8,})/);
+        if (dm) return dm[1];
+      }
+
+      // onclick 속성
+      const oc = el.getAttribute('onclick') || '';
+      const om = oc.match(/\/reserve\/plan\/schedule\/(\d+)/);
+      if (om) return om[1];
+    }
+
+    // 페이지 전체 HTML에서 reserve URL 패턴 검색 (script 포함)
+    const html = document.documentElement.innerHTML;
+    const matches = [...html.matchAll(/\/reserve\/plan\/schedule\/(\d+)/g)];
+    // 날짜로 필터링은 어렵지만 중복 제거 후 반환
+    const ids = [...new Set(matches.map((m) => m[1]))];
+    // 가장 큰 ID (최신 경기일 가능성)
+    if (ids.length > 0) {
+      return ids.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
+    }
+    return null;
+  }, { venue: VENUE_NAME, date: targetDate });
+
+  if (id) {
+    log(`✅ Schedule ID 발견: ${id}`);
+    return id;
+  }
+
+  log('⚠️  Schedule ID 추출 실패 → 스포츠 페이지 폴링 전략으로 전환');
+  return null;
+}
+
+// ─────────────────────────────────────────────
+// 전략 B: 정시 폴링 (100ms 간격)
 // ─────────────────────────────────────────────
 
 async function waitForOpenTime(openTimeStr) {
@@ -74,9 +126,7 @@ async function waitForOpenTime(openTimeStr) {
 
   log(`⏱  오픈까지 ${Math.round(waitMs / 1000)}초 대기 (목표: ${openTimeStr})`);
 
-  if (waitMs > 31000) {
-    await sleep(waitMs - 30000);
-  }
+  if (waitMs > 31000) await sleep(waitMs - 30000);
 
   let remaining = Math.min(waitMs, 30000);
   while (remaining > 1000) {
@@ -90,42 +140,115 @@ async function waitForOpenTime(openTimeStr) {
 }
 
 // ─────────────────────────────────────────────
-// 예매하기 버튼 클릭 (대전 한화생명 볼파크)
+// 대기열(Queue) 팝업 처리
 // ─────────────────────────────────────────────
 
-async function clickBookingButton(page, targetDate) {
-  await page.reload({ waitUntil: 'domcontentloaded' });
-  log(`🔍 "${VENUE_NAME}" 경기 탐색 중... (날짜: ${targetDate || '최초 활성'})`);
+async function handleQueueIfAppears(page) {
+  // 대기열 팝업 감지 (최대 3분 대기)
+  try {
+    const queueSelector = 'text=대기, text=잠시 후, text=접속자가 많아, [class*="queue"], [class*="waiting"]';
+    await page.waitForSelector(queueSelector, { timeout: 4000 });
+    log('🚦 대기열 팝업 감지됨. 자동 대기 중...');
 
-  // 경기 목록의 각 행을 순회
-  const rows = page.locator('li, tr, [class*="schedule"], [class*="event-item"], [class*="game"]');
-  const count = await rows.count();
+    // 대기열이 끝날 때까지 반복 확인 (최대 10분)
+    for (let i = 0; i < 600; i++) {
+      await sleep(1000);
+      const stillWaiting = await page.locator(queueSelector).count();
+      if (stillWaiting === 0) {
+        log('✅ 대기열 통과!');
+        return;
+      }
+      if (i % 10 === 0) {
+        process.stdout.write(`\r🚦 대기 중... ${i}초 경과   `);
+      }
+    }
+  } catch {
+    // 대기열 없음 - 바로 진행
+  }
+}
 
-  for (let i = 0; i < count; i++) {
-    const row = rows.nth(i);
-    const text = await row.textContent().catch(() => '');
+// ─────────────────────────────────────────────
+// 예매 진입 (전략 A or B 자동 선택)
+// ─────────────────────────────────────────────
 
-    if (!text.includes(VENUE_NAME)) continue;
-    if (targetDate && !text.includes(targetDate)) continue;
+async function enterReservePage(page, config) {
+  const { targetGameDate, openTime } = config;
 
-    // 활성 예매하기 버튼 확인 (회색 오픈예정 버튼 제외)
-    const btn = row.locator('button:has-text("예매하기"), a:has-text("예매하기")');
-    const btnCount = await btn.count();
-    if (btnCount === 0) continue;
+  // ── 전략 A: 사전 URL 추출 ──────────────────────
+  const scheduleId = await extractScheduleId(page, targetGameDate);
 
-    // 오픈예정(disabled) 버튼 스킵
-    const isDisabled =
-      (await btn.first().getAttribute('disabled')) !== null ||
-      (await btn.first().getAttribute('class') || '').includes('disabled') ||
-      (await btn.first().getAttribute('class') || '').includes('planned');
-    if (isDisabled) continue;
+  if (scheduleId) {
+    const reserveUrl = `${RESERVE_BASE}/${scheduleId}?menuIndex=reserve`;
+    log(`🎯 직접 예매 URL로 선접: ${reserveUrl}`);
 
-    log(`🎯 예매하기 클릭! (${text.match(/\d{2}\.\d{2}/)?.[0] || ''})`);
-    await btn.first().click();
-    return;
+    // 오픈 30초 전에 미리 페이지 진입 (연결 선점)
+    await waitForOpenTime(openTime);
+
+    // 직접 URL 접근 (트래픽 우회)
+    await page.goto(reserveUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    // 페이지가 아직 잠겨있으면 오픈 후 새로고침
+    const isLocked = await page.locator('text=예매 가능 시간이 아닙니다, text=오픈 전, text=준비 중').count();
+    if (isLocked > 0) {
+      log('⏳ 페이지 잠김 상태 → 오픈 후 새로고침...');
+      await sleep(500);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+    }
+  } else {
+    // ── 전략 B: 스포츠 페이지 폴링 ───────────────
+    log('📍 스포츠 페이지 폴링 전략');
+    await page.goto(SPORTS_PAGE, { waitUntil: 'domcontentloaded' });
+    await waitForOpenTime(openTime);
+    await pollAndClickBookingButton(page, targetGameDate);
   }
 
-  throw new Error('활성화된 예매하기 버튼을 찾지 못했습니다. 날짜/오픈 여부를 확인해주세요.');
+  // 대기열 처리
+  await handleQueueIfAppears(page);
+}
+
+// ─────────────────────────────────────────────
+// 폴링 방식 예매하기 클릭 (100ms 간격, 최대 30초)
+// ─────────────────────────────────────────────
+
+async function pollAndClickBookingButton(page, targetDate) {
+  log('⚡ 예매하기 버튼 폴링 시작 (100ms 간격)...');
+
+  for (let attempt = 0; attempt < 300; attempt++) {
+    // 매 10회마다 새로고침 (트래픽 고려해 너무 자주 하지 않음)
+    if (attempt > 0 && attempt % 10 === 0) {
+      await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+    }
+
+    const clicked = await page.evaluate(({ venue, date }) => {
+      const rows = document.querySelectorAll('li, tr, [class*="schedule"], [class*="item"]');
+      for (const row of rows) {
+        const text = row.textContent || '';
+        if (!text.includes(venue)) continue;
+        if (date && !text.includes(date)) continue;
+
+        const btns = row.querySelectorAll('button, a');
+        for (const btn of btns) {
+          const btnText = btn.textContent?.trim() || '';
+          if (!btnText.includes('예매하기')) continue;
+          if (btn.disabled || btn.classList.contains('disabled')) continue;
+          // 오픈예정 텍스트가 있으면 스킵
+          if (btnText.includes('오픈') || btnText.includes('예정')) continue;
+          btn.click();
+          return true;
+        }
+      }
+      return false;
+    }, { venue: VENUE_NAME, date: targetDate });
+
+    if (clicked) {
+      log(`✅ 예매하기 클릭 성공 (${attempt + 1}번째 시도)`);
+      return;
+    }
+
+    await sleep(100);
+  }
+
+  throw new Error('30초 내 예매하기 버튼 활성화 실패');
 }
 
 // ─────────────────────────────────────────────
@@ -141,9 +264,7 @@ async function handleConfirmPopup(page, label = '', timeout = 5000) {
       await confirmBtn.last().click();
       await sleep(400);
     }
-  } catch {
-    // 팝업 없음
-  }
+  } catch { /* 팝업 없음 */ }
 }
 
 // ─────────────────────────────────────────────
@@ -160,7 +281,6 @@ async function waitForCaptchaDone(page) {
       timeout: 120000,
     })
     .catch(async () => {
-      // 폴백: 좌석 맵이 보일 때까지 대기
       await page.waitForSelector('svg, canvas, [class*="seat-map"]', { timeout: 120000 });
     });
 
@@ -175,8 +295,6 @@ async function waitForCaptchaDone(page) {
 async function clickTargetGradeInPanel(page, targetGrade) {
   log(`🎫 등급 선택: "${targetGrade}"`);
 
-  // 우측 등급 목록에서 텍스트 매칭으로 클릭
-  // 가용 석수가 0인 경우 경고
   const gradeItems = page.locator('li, [class*="grade-item"], [class*="seat-grade"]');
   const count = await gradeItems.count();
 
@@ -185,15 +303,14 @@ async function clickTargetGradeInPanel(page, targetGrade) {
     const text = await item.textContent().catch(() => '');
     if (!text.includes(targetGrade)) continue;
 
-    // "0 석" 인 경우 경고만 출력 (시도는 함)
     const seatMatch = text.match(/(\d+)\s*석/);
     const seatCount = seatMatch ? parseInt(seatMatch[1]) : -1;
     if (seatCount === 0) {
-      log(`⚠️  "${targetGrade}" 현재 0석. 오픈 후 갱신될 수 있으니 계속 진행...`);
+      log(`⚠️  "${targetGrade}" 현재 0석. 계속 진행...`);
     }
 
     await item.click();
-    log(`✅ "${targetGrade}" 클릭 완료`);
+    log(`✅ "${targetGrade}" 클릭`);
     await sleep(600);
     return;
   }
@@ -202,23 +319,20 @@ async function clickTargetGradeInPanel(page, targetGrade) {
 }
 
 // ─────────────────────────────────────────────
-// 하위 구역(섹션) 선택
+// 하위 구역 선택
 // ─────────────────────────────────────────────
 
 async function selectBestSubSection(page, ticketCount) {
-  // 구역 목록이 나타나는지 잠시 대기
   await sleep(600);
 
-  // 하위 구역 항목 탐색 (예: "405구역 2석")
   const subItems = page.locator(
     '[class*="sub"] li, [class*="section-item"], [class*="zone-item"], li[class*="area"]'
   );
   const count = await subItems.count();
-  if (count === 0) return; // 구역 없으면 바로 진행
+  if (count === 0) return;
 
   log(`📍 하위 구역 선택 (요청 ${ticketCount}장)...`);
 
-  // 필요한 장수 이상인 첫 번째 구역 선택
   for (let i = 0; i < count; i++) {
     const item = subItems.nth(i);
     const text = await item.textContent().catch(() => '');
@@ -233,22 +347,21 @@ async function selectBestSubSection(page, ticketCount) {
     }
   }
 
-  // 부족해도 가장 많은 구역 선택
-  let maxCount = 0;
-  let maxIdx = 0;
+  // 가장 많은 구역 선택
+  let maxCount = 0, maxIdx = 0;
   for (let i = 0; i < count; i++) {
     const text = await subItems.nth(i).textContent().catch(() => '');
     const m = text.match(/(\d+)\s*석/);
     const n = m ? parseInt(m[1]) : 0;
     if (n > maxCount) { maxCount = n; maxIdx = i; }
   }
-  log(`⚠️  ${ticketCount}석 이상 구역 없음. 가용 최대(${maxCount}석) 구역 선택`);
+  log(`⚠️  ${ticketCount}석 이상 구역 없음. 최대(${maxCount}석) 구역 선택`);
   await subItems.nth(maxIdx).click();
   await sleep(600);
 }
 
 // ─────────────────────────────────────────────
-// 좌석 유형 선택 팝업 처리 (잔디석/외야커플석 등)
+// 좌석 유형 선택 팝업 처리
 // ─────────────────────────────────────────────
 
 async function handleSeatTypePopup(page, targetGrade) {
@@ -256,15 +369,13 @@ async function handleSeatTypePopup(page, targetGrade) {
     await page.waitForSelector('text=좌석 유형 선택', { timeout: 3000 });
     log('📋 좌석 유형 선택 팝업 처리...');
 
-    // 팝업 내 목표 등급에 해당하는 직접선택 버튼 클릭
-    // 팝업 구조: [등급명 텍스트] + [직접선택 버튼] 반복
     const sections = page.locator('[class*="type-item"], [class*="seat-type"], .modal li, [role="dialog"] li');
     const count = await sections.count();
 
     for (let i = 0; i < count; i++) {
       const sec = sections.nth(i);
       const text = await sec.textContent().catch(() => '');
-      if (text.includes(targetGrade) || targetGrade.includes('잔디') && text.includes('잔디')) {
+      if (text.includes(targetGrade) || (targetGrade.includes('잔디') && text.includes('잔디'))) {
         const btn = sec.locator('button:has-text("직접선택")');
         if (await btn.count() > 0) {
           await btn.click();
@@ -275,14 +386,11 @@ async function handleSeatTypePopup(page, targetGrade) {
       }
     }
 
-    // 폴백: 마지막 직접선택 버튼 (잔디석은 두 번째)
     const allDirect = page.locator('button:has-text("직접선택")');
     const btnCount = await allDirect.count();
     await allDirect.nth(btnCount - 1).click();
     await sleep(500);
-  } catch {
-    // 팝업 없음 - 정상
-  }
+  } catch { /* 팝업 없음 */ }
 }
 
 // ─────────────────────────────────────────────
@@ -294,56 +402,43 @@ async function clickAvailableSeats(page, ticketCount) {
 
   let clicked = 0;
 
-  // SVG/Canvas 기반 좌석 맵에서 사용 가능한 좌석 탐색
   for (let attempt = 0; attempt < 5 && clicked < ticketCount; attempt++) {
-    const newClicks = await page.evaluate(
-      ({ needed }) => {
-        // 사용 불가(회색/흰색) 판별 함수
-        function isUnavailableColor(fill) {
-          if (!fill || fill === 'none' || fill === 'transparent') return true;
-          const f = fill.toLowerCase().trim();
-          // 회색/흰색 계열 필터
-          const grayPatterns = [
-            /^#[c-f][c-f][c-f]/i, // #ccc~#fff
-            /^#[89a-b][89a-b][89a-b]/i,
-            /^rgb\(\s*([2-9]\d\d|1[6-9]\d)\s*,\s*([2-9]\d\d|1[6-9]\d)\s*,\s*([2-9]\d\d|1[6-9]\d)/,
-            'none', 'transparent', 'white', '#fff', '#ffffff',
-          ];
-          for (const p of grayPatterns) {
-            if (p instanceof RegExp ? p.test(f) : f === p) return true;
-          }
-          return false;
-        }
+    const newClicks = await page.evaluate(({ needed }) => {
+      function isUnavailableColor(fill) {
+        if (!fill || fill === 'none' || fill === 'transparent') return true;
+        const f = fill.toLowerCase().trim();
+        return (
+          /^#[c-f][c-f][c-f]/i.test(f) ||
+          /^#[89ab][89ab][89ab]/i.test(f) ||
+          f === 'white' || f === '#fff' || f === '#ffffff'
+        );
+      }
 
-        // 클래스 기반 우선 탐색
-        const byClass = Array.from(
-          document.querySelectorAll('[class*="seat"]:not([class*="disabled"]):not([class*="sold"]):not([class*="empty"])')
-        ).filter((el) => {
-          const r = el.getBoundingClientRect();
-          return r.width > 0 && r.height > 0;
-        });
+      const byClass = Array.from(
+        document.querySelectorAll('[class*="seat"]:not([class*="disabled"]):not([class*="sold"]):not([class*="empty"])')
+      ).filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
 
-        // SVG 요소 탐색 (색상 기반)
-        const bySvg = Array.from(document.querySelectorAll('rect, circle')).filter((el) => {
-          const fill = el.getAttribute('fill') || window.getComputedStyle(el).fill;
-          if (isUnavailableColor(fill)) return false;
-          const cls = (el.className?.baseVal || '').toLowerCase();
-          if (cls.includes('disabled') || cls.includes('sold') || cls.includes('bg')) return false;
-          const r = el.getBoundingClientRect();
-          return r.width >= 4 && r.width <= 30; // 좌석 크기 범위 필터
-        });
+      const bySvg = Array.from(document.querySelectorAll('rect, circle')).filter((el) => {
+        const fill = el.getAttribute('fill') || window.getComputedStyle(el).fill;
+        if (isUnavailableColor(fill)) return false;
+        const cls = (el.className?.baseVal || '').toLowerCase();
+        if (cls.includes('disabled') || cls.includes('sold') || cls.includes('bg')) return false;
+        const r = el.getBoundingClientRect();
+        return r.width >= 4 && r.width <= 30;
+      });
 
-        const candidates = byClass.length > 0 ? byClass : bySvg;
-        let count = 0;
-        for (const el of candidates) {
-          if (count >= needed) break;
-          el.click();
-          count++;
-        }
-        return count;
-      },
-      { needed: ticketCount - clicked }
-    );
+      const candidates = byClass.length > 0 ? byClass : bySvg;
+      let count = 0;
+      for (const el of candidates) {
+        if (count >= needed) break;
+        el.click();
+        count++;
+      }
+      return count;
+    }, { needed: ticketCount - clicked });
 
     clicked += newClicks;
     if (clicked < ticketCount) await sleep(500);
@@ -352,10 +447,9 @@ async function clickAvailableSeats(page, ticketCount) {
   if (clicked === 0) {
     log('⚠️  자동 좌석 클릭 실패. 직접 선택해주세요.');
   } else {
-    log(`✅ 좌석 ${clicked}/${ticketCount}장 클릭 완료`);
+    log(`✅ 좌석 ${clicked}/${ticketCount}장 선택 완료`);
   }
 
-  // 좌석 선택 후 확인 팝업
   await handleConfirmPopup(page, '좌석 확인');
   await sleep(500);
 }
@@ -367,7 +461,6 @@ async function clickAvailableSeats(page, ticketCount) {
 async function selectSeat(page, config) {
   const { targetGrade, ticketCount } = config;
 
-  // 좌석 맵/등급 패널 로드 대기
   await page.waitForSelector(
     'svg, canvas, [class*="seat-map"], [class*="grade"], [class*="등급"]',
     { timeout: 15000 }
@@ -375,22 +468,12 @@ async function selectSeat(page, config) {
   log('🗺️  좌석 선택 화면 로드 완료');
   await sleep(800);
 
-  // 1. 등급 패널에서 목표 등급 클릭
   await clickTargetGradeInPanel(page, targetGrade);
-
-  // 2. 하위 구역 선택 (있는 경우)
   await selectBestSubSection(page, ticketCount);
-
-  // 3. 좌석 유형 선택 팝업 처리 (잔디석/외야커플석 등)
   await handleSeatTypePopup(page, targetGrade);
-
-  // 팝업 닫힌 후 확인 팝업 처리
   await handleConfirmPopup(page, '유형 확인');
-
-  // 4. 사용 가능한 좌석 N장 클릭
   await clickAvailableSeats(page, ticketCount);
 
-  // 5. 다음단계
   log('➡️  다음단계 클릭...');
   await page.locator('button:has-text("다음단계"), a:has-text("다음단계")').first().click();
   log('🎉 좌석 선택 완료! 이후 단계(권종/배송/결제)를 진행해주세요.');
@@ -417,23 +500,13 @@ async function runTicketBot(config) {
 
   try {
     await login(page, config);
-
-    log(`📍 ${SPORTS_PAGE} 이동...`);
-    await page.goto(SPORTS_PAGE, { waitUntil: 'domcontentloaded' });
-
-    await waitForOpenTime(config.openTime);
-
-    await clickBookingButton(page, config.targetGameDate);
-
+    await enterReservePage(page, config);
     await handleConfirmPopup(page, '예매안내');
-
     await waitForCaptchaDone(page);
-
     await selectSeat(page, config);
   } catch (err) {
     log(`❌ 오류: ${err.message}`);
     log('   브라우저는 열어둡니다. 수동으로 이어서 진행해주세요.');
-    // 오류 시 브라우저 유지
   }
 }
 
