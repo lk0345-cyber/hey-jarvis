@@ -41,15 +41,35 @@ async function login(page, config) {
 
   log('🔐 로그인 버튼 클릭...');
   await page.locator('a.header_util_link:has-text("로그인")').click();
-  await sleep(1500);
+  await sleep(2000);
 
-  // 로그인 모달 대기 후 모달 안의 PAYCO 버튼 클릭 (헤더 PAYCO 링크 제외)
-  await page.waitForSelector('a[href*="payco"]:not(.header_util_link), button[class*="payco"], img[alt*="PAYCO"]', { timeout: 10000 });
-  await page.evaluate(() => {
-    const paycoEl = document.querySelector('a[href*="payco"]:not(.header_util_link), button[class*="payco"], img[alt*="PAYCO"]');
-    if (paycoEl) paycoEl.click();
-  });
-  log('🔐 PAYCO 클릭 완료');
+  // 디버그: 현재 페이지 스크린샷 저장
+  await page.screenshot({ path: '/tmp/ticketlink-login.png', fullPage: false });
+  log('📸 스크린샷 저장: /tmp/ticketlink-login.png');
+
+  // 로그인 모달 PAYCO 버튼 찾기 (다양한 셀렉터 시도)
+  const paycoSelectors = [
+    '.btn_payco',
+    '.login_payco',
+    'a[class*="payco"]:not(.header_util_link)',
+    'button[class*="payco"]',
+    'img[alt*="PAYCO"]',
+    'a[title*="PAYCO"]',
+    '.sns_login a',
+    '.social_login a',
+  ];
+
+  let clicked = false;
+  for (const sel of paycoSelectors) {
+    try {
+      await page.waitForSelector(sel, { timeout: 2000 });
+      await page.locator(sel).first().click();
+      log(`🔐 PAYCO 클릭: ${sel}`);
+      clicked = true;
+      break;
+    } catch { /* 다음 셀렉터 시도 */ }
+  }
+  if (!clicked) throw new Error('PAYCO 버튼을 찾을 수 없음 — /tmp/ticketlink-login.png 확인');
 
   await page.waitForURL('**/payco.com/**', { timeout: 15000 });
   log('📱 PAYCO 로그인 페이지 진입');
