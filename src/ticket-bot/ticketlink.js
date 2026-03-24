@@ -1,8 +1,6 @@
 'use strict';
 
-const { chromium } = require('playwright-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-chromium.use(StealthPlugin());
+const { chromium } = require('patchright');
 const fs = require('fs');
 
 const CHROME_EXE = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -523,9 +521,20 @@ async function runTicketBot(config) {
   log('🌐 시스템 Chrome 실행...');
   const browser = await chromium.launch({
     headless: false,
-    slowMo: 60,
     executablePath: CHROME_EXE,
-    args: ['--start-maximized', '--disable-blink-features=AutomationControlled'],
+    args: [
+      '--start-maximized',
+      '--disable-blink-features=AutomationControlled',
+      '--no-first-run',
+      '--no-default-browser-check',
+    ],
+    ignoreDefaultArgs: [
+      '--enable-automation',        // 자동화 배너 제거
+      '--disable-extensions',       // 감지 핑거프린트 제거
+      '--disable-component-update',
+      '--disable-default-apps',
+      '--disable-popup-blocking',
+    ],
   });
 
   const context = await browser.newContext({
@@ -533,8 +542,8 @@ async function runTicketBot(config) {
     viewport: { width: 1280, height: 900 },
   });
 
-  // stealth 플러그인이 모든 감지 우회 처리함
   await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     window.alert = () => {};
     window.confirm = () => true;
   });
