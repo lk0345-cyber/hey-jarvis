@@ -530,7 +530,6 @@ async function runTicketBot(config) {
 
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    window.close = () => {};
     window.alert = () => {};
     window.confirm = () => true;
   });
