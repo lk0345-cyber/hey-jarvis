@@ -24,22 +24,10 @@ function log(msg) {
 // ─────────────────────────────────────────────
 
 async function login(page, config) {
-  log('🔐 티켓링크 접속...');
-  await page.goto('https://www.ticketlink.co.kr', { waitUntil: 'domcontentloaded' });
+  log('🔐 티켓링크 로그인 페이지 접속...');
+  await page.goto('https://www.ticketlink.co.kr/auth/signin', { waitUntil: 'domcontentloaded' });
+  await sleep(1500);
 
-  // 페이지 안정화 대기 (봇 감지 팝업 처리 시간 확보)
-  await sleep(2000);
-
-  // 혹시 HTML 모달로 뜨는 오류 팝업 처리
-  try {
-    const errBtn = page.locator('button:has-text("확인"), .btn_confirm, .layer_close').first();
-    if (await errBtn.isVisible({ timeout: 1000 })) {
-      await errBtn.click();
-      await sleep(500);
-    }
-  } catch { /* 팝업 없음 */ }
-
-  await page.locator('a[href*="/login"], button:has-text("로그인")').first().click();
   await page.locator('a[href*="payco"], button[class*="payco"], img[alt*="PAYCO"]').first().click();
 
   await page.waitForURL('**/payco.com/**', { timeout: 15000 });
@@ -511,9 +499,11 @@ async function runTicketBot(config) {
     viewport: { width: 1280, height: 900 },
   });
 
-  // navigator.webdriver 숨기기 (봇 감지 우회)
+  // 봇 감지 우회
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    // window.close() 차단 (봇 감지 시 강제 종료 방지)
+    window.close = () => {};
   });
 
   const page = await context.newPage();
