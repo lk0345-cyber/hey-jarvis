@@ -44,10 +44,10 @@ async function login(page, config) {
   });
   log('🔐 로그인 클릭 완료');
 
-  // 로그인 모달 또는 페이지에서 PAYCO 버튼 대기 후 클릭
-  await page.waitForSelector('a[href*="payco"], button[class*="payco"], img[alt*="PAYCO"]', { timeout: 10000 });
+  // 로그인 모달 대기 후 모달 안의 PAYCO 버튼 클릭 (헤더 PAYCO 링크 제외)
+  await page.waitForSelector('a[href*="payco"]:not(.header_util_link), button[class*="payco"], img[alt*="PAYCO"]', { timeout: 10000 });
   await page.evaluate(() => {
-    const paycoEl = document.querySelector('a[href*="payco"], button[class*="payco"], img[alt*="PAYCO"]');
+    const paycoEl = document.querySelector('a[href*="payco"]:not(.header_util_link), button[class*="payco"], img[alt*="PAYCO"]');
     if (paycoEl) paycoEl.click();
   });
   log('🔐 PAYCO 클릭 완료');
