@@ -517,23 +517,24 @@ async function launchChromeWithCDP() {
 
   // Chrome을 자동화 플래그 없이 직접 실행 (봇 감지 없음)
   log('🌐 Chrome 원격 디버깅 모드로 실행 중...');
-  spawn(CHROME_EXE, [
+  const child = spawn(CHROME_EXE, [
     '--remote-debugging-port=9222',
     '--no-first-run',
     '--no-default-browser-check',
     '--start-maximized',
   ], { detached: true, stdio: 'ignore' });
+  child.unref();
 
-  // Chrome 시작 대기
-  for (let i = 0; i < 10; i++) {
-    await sleep(1000);
+  // Chrome 시작 대기 (최대 15초)
+  await sleep(3000);
+  for (let i = 0; i < 12; i++) {
     try {
-      const browser = await chromium.connectOverCDP(CDP_URL, { timeout: 1000 });
+      const browser = await chromium.connectOverCDP(CDP_URL, { timeout: 2000 });
       log('🌐 Chrome CDP 연결 완료');
       return browser;
-    } catch { /* 아직 시작 중 */ }
+    } catch { await sleep(1000); }
   }
-  throw new Error('Chrome 시작 실패 — 수동으로 Chrome을 실행해주세요.');
+  throw new Error('Chrome 시작 실패 — Chrome이 설치되어 있는지 확인해주세요.');
 }
 
 async function runTicketBot(config) {
