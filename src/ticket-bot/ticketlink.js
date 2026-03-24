@@ -40,56 +40,37 @@ async function login(page, config) {
   } catch { /* ignore */ }
 
   log('🔐 로그인 버튼 클릭...');
-  await page.locator('a.header_util_link:has-text("로그인")').click();
-  await sleep(2000);
 
-  // 디버그: 현재 페이지 스크린샷 저장
-  await page.screenshot({ path: '/tmp/ticketlink-login.png', fullPage: false });
-  log('📸 스크린샷 저장: /tmp/ticketlink-login.png');
+  // PAYCO 팝업 창 대기 후 클릭
+  const [paycoPopup] = await Promise.all([
+    page.context().waitForEvent('page', { timeout: 15000 }),
+    page.locator('a.header_util_link:has-text("로그인")').click(),
+  ]);
 
-  // 로그인 모달 PAYCO 버튼 찾기 (다양한 셀렉터 시도)
-  const paycoSelectors = [
-    '.btn_payco',
-    '.login_payco',
-    'a[class*="payco"]:not(.header_util_link)',
-    'button[class*="payco"]',
-    'img[alt*="PAYCO"]',
-    'a[title*="PAYCO"]',
-    '.sns_login a',
-    '.social_login a',
-  ];
+  log('📱 PAYCO 팝업 감지됨');
+  await paycoPopup.waitForLoadState('domcontentloaded');
+  await sleep(1000);
 
-  let clicked = false;
-  for (const sel of paycoSelectors) {
-    try {
-      await page.waitForSelector(sel, { timeout: 2000 });
-      await page.locator(sel).first().click();
-      log(`🔐 PAYCO 클릭: ${sel}`);
-      clicked = true;
-      break;
-    } catch { /* 다음 셀렉터 시도 */ }
-  }
-  if (!clicked) throw new Error('PAYCO 버튼을 찾을 수 없음 — /tmp/ticketlink-login.png 확인');
+  // 팝업에 계정 정보 입력
+  await paycoPopup.locator('input[placeholder*="아이디"], input[name="id"], #idInput').fill(config.paycoId);
+  await paycoPopup.locator('input[placeholder*="비밀번호"], input[name="pw"], input[type="password"]').fill(config.paycoPw);
+  await paycoPopup.locator('button:has-text("로그인"), .btn_login').first().click();
 
-  await page.waitForURL('**/payco.com/**', { timeout: 15000 });
-  log('📱 PAYCO 로그인 페이지 진입');
-
-  await page.waitForSelector('input[name="id"], #idInput', { timeout: 10000 });
-  await page.locator('input[name="id"], #idInput').fill(config.paycoId);
-  await page.locator('input[name="pw"], input[type="password"]').fill(config.paycoPw);
-  await page.locator('.btn_login, button[type="submit"]').first().click();
-
-  // 새 기기 인증
+  // 새 기기 인증 (팝업에서)
   try {
-    await page.waitForSelector('text=새로운 기기', { timeout: 6000 });
+    await paycoPopup.waitForSelector('text=새로운 기기', { timeout: 6000 });
     log('📲 새 기기 인증 입력...');
-    await page.locator('input[placeholder*="인증"], input[type="number"], input[maxlength="8"]').fill(
+    await paycoPopup.locator('input[placeholder*="인증"], input[type="number"], input[maxlength="8"]').fill(
       config.verificationCode
     );
-    await page.locator('button:has-text("확인")').click();
+    await paycoPopup.locator('button:has-text("확인")').click();
   } catch { /* 인증 없음 */ }
 
-  await page.waitForURL('**/ticketlink.co.kr/**', { timeout: 20000 });
+  // 팝업이 닫히고 메인 페이지가 로그인 완료 상태가 될 때까지 대기
+  await Promise.race([
+    paycoPopup.waitForEvent('close', { timeout: 20000 }),
+    page.waitForURL('**/ticketlink.co.kr/**', { timeout: 20000 }),
+  ]);
   log('✅ 로그인 완료');
 }
 
