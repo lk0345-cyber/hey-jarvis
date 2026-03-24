@@ -26,30 +26,30 @@ async function login(page, config) {
   log('🔐 티켓링크 접속...');
   await page.goto('https://www.ticketlink.co.kr', { waitUntil: 'domcontentloaded' });
 
-  // 우측 상단 로그인 버튼 클릭
+  // 우측 상단 로그인 버튼
   await page.locator('a[href*="/login"], button:has-text("로그인")').first().click();
 
   // PAYCO 로그인 버튼
   await page.locator('a[href*="payco"], button[class*="payco"], img[alt*="PAYCO"]').first().click();
 
-  // PAYCO 로그인 페이지 대기
   await page.waitForURL('**/payco.com/**', { timeout: 15000 });
   log('📱 PAYCO 로그인 페이지 진입');
 
-  // 아이디/비밀번호 입력
   await page.waitForSelector('input[name="id"], #idInput', { timeout: 10000 });
   await page.locator('input[name="id"], #idInput').fill(config.paycoId);
   await page.locator('input[name="pw"], input[type="password"]').fill(config.paycoPw);
   await page.locator('.btn_login, button[type="submit"]').first().click();
 
-  // 새 기기 인증 팝업 처리
+  // 새 기기/브라우저 인증 처리
   try {
     await page.waitForSelector('text=새로운 기기', { timeout: 6000 });
     log('📲 새 기기 인증 입력 중...');
-    await page.locator('input[placeholder*="인증"], input[type="number"], input[maxlength="8"]').fill(config.verificationCode);
+    await page.locator('input[placeholder*="인증"], input[type="number"], input[maxlength="8"]').fill(
+      config.verificationCode
+    );
     await page.locator('button:has-text("확인")').click();
   } catch {
-    // 인증 없이 통과
+    // 인증 팝업 없음
   }
 
   await page.waitForURL('**/ticketlink.co.kr/**', { timeout: 20000 });
@@ -57,7 +57,7 @@ async function login(page, config) {
 }
 
 // ─────────────────────────────────────────────
-// 정시 대기 (밀리초 정밀도)
+// 정시 대기 (밀리초 정밀)
 // ─────────────────────────────────────────────
 
 async function waitForOpenTime(openTimeStr) {
@@ -72,18 +72,15 @@ async function waitForOpenTime(openTimeStr) {
     return;
   }
 
-  log(`⏱  오픈까지 ${Math.round(waitMs / 1000)}초 대기 중... (목표: ${openTimeStr})`);
+  log(`⏱  오픈까지 ${Math.round(waitMs / 1000)}초 대기 (목표: ${openTimeStr})`);
 
-  // 30초 전까지 여유 있게 대기
   if (waitMs > 31000) {
     await sleep(waitMs - 30000);
   }
 
-  // 마지막 30초: 1초 단위 카운트다운
   let remaining = Math.min(waitMs, 30000);
   while (remaining > 1000) {
-    const secs = Math.round(remaining / 1000);
-    process.stdout.write(`\r⏱  ${secs}초 남음...   `);
+    process.stdout.write(`\r⏱  ${Math.round(remaining / 1000)}초 남음...   `);
     await sleep(1000);
     remaining -= 1000;
   }
@@ -97,193 +94,303 @@ async function waitForOpenTime(openTimeStr) {
 // ─────────────────────────────────────────────
 
 async function clickBookingButton(page, targetDate) {
-  // 페이지 새로고침으로 최신 상태 반영
   await page.reload({ waitUntil: 'domcontentloaded' });
+  log(`🔍 "${VENUE_NAME}" 경기 탐색 중... (날짜: ${targetDate || '최초 활성'})`);
 
-  log(`🔍 "${VENUE_NAME}" 예매하기 버튼 탐색 중...`);
-
-  // 카드 내 venue 텍스트 찾기
-  // 구조: .venue-text → 부모 카드 → 예매하기 버튼
-  const venueElements = page.locator(`text=${VENUE_NAME}`);
-  const count = await venueElements.count();
-
-  if (count === 0) {
-    throw new Error(`"${VENUE_NAME}" 경기를 찾을 수 없습니다.`);
-  }
+  // 경기 목록의 각 행을 순회
+  const rows = page.locator('li, tr, [class*="schedule"], [class*="event-item"], [class*="game"]');
+  const count = await rows.count();
 
   for (let i = 0; i < count; i++) {
-    const venueEl = venueElements.nth(i);
-    // 날짜 필터 (설정된 경우)
-    if (targetDate) {
-      const cardText = await venueEl.locator('..').locator('..').textContent();
-      if (!cardText.includes(targetDate)) continue;
-    }
+    const row = rows.nth(i);
+    const text = await row.textContent().catch(() => '');
 
-    // 해당 카드의 예매하기 버튼 찾기
-    const card = venueEl.locator('..').locator('..');
-    const btn = card.locator('button:has-text("예매하기"), a:has-text("예매하기")');
+    if (!text.includes(VENUE_NAME)) continue;
+    if (targetDate && !text.includes(targetDate)) continue;
+
+    // 활성 예매하기 버튼 확인 (회색 오픈예정 버튼 제외)
+    const btn = row.locator('button:has-text("예매하기"), a:has-text("예매하기")');
     const btnCount = await btn.count();
+    if (btnCount === 0) continue;
 
-    if (btnCount > 0) {
-      const btnText = await btn.first().textContent();
-      if (btnText.includes('예매하기')) {
-        log('🎯 예매하기 버튼 클릭!');
-        await btn.first().click();
-        return;
-      }
-    }
+    // 오픈예정(disabled) 버튼 스킵
+    const isDisabled =
+      (await btn.first().getAttribute('disabled')) !== null ||
+      (await btn.first().getAttribute('class') || '').includes('disabled') ||
+      (await btn.first().getAttribute('class') || '').includes('planned');
+    if (isDisabled) continue;
+
+    log(`🎯 예매하기 클릭! (${text.match(/\d{2}\.\d{2}/)?.[0] || ''})`);
+    await btn.first().click();
+    return;
   }
 
-  throw new Error('활성화된 예매하기 버튼을 찾지 못했습니다.');
+  throw new Error('활성화된 예매하기 버튼을 찾지 못했습니다. 날짜/오픈 여부를 확인해주세요.');
 }
 
 // ─────────────────────────────────────────────
-// 팝업 확인 버튼 처리 (범용)
+// 팝업 확인 버튼 공통 처리
 // ─────────────────────────────────────────────
 
-async function handleConfirmPopup(page, label = '') {
+async function handleConfirmPopup(page, label = '', timeout = 5000) {
   try {
-    await page.waitForSelector('.modal, [role="dialog"], .popup', { timeout: 5000 });
-    log(`📋 팝업 처리${label ? ` (${label})` : ''}...`);
-    await page.locator('button:has-text("확인")').last().click();
-    await sleep(500);
+    await page.waitForSelector('.modal, [role="dialog"], .popup, [class*="modal"]', { timeout });
+    const confirmBtn = page.locator('button:has-text("확인")');
+    if (await confirmBtn.count() > 0) {
+      log(`📋 팝업 처리${label ? ` [${label}]` : ''}...`);
+      await confirmBtn.last().click();
+      await sleep(400);
+    }
   } catch {
     // 팝업 없음
   }
 }
 
 // ─────────────────────────────────────────────
-// 클린예매 보안문자 대기
+// 보안문자(클린예매) 대기
 // ─────────────────────────────────────────────
 
 async function waitForCaptchaDone(page) {
-  log('🔒 보안문자 대기 중...');
-  log('   → 화면의 보안문자를 입력하고 [입력완료] 버튼을 눌러주세요.');
+  log('🔒 보안문자 입력 대기 중...');
+  log('   → 화면의 보안문자를 직접 입력하고 [입력완료] 버튼을 눌러주세요.');
 
-  // 보안문자 모달이 닫히고 좌석맵이 활성화될 때까지 대기
-  await page.waitForSelector(
-    '.captcha-modal, [class*="clean-book"], [class*="security"]',
-    { state: 'hidden', timeout: 120000 }
-  ).catch(async () => {
-    // 셀렉터가 다를 경우 폴백: 입력완료 버튼이 사라질 때까지
-    await page.waitForSelector('button:has-text("입력완료")', {
+  await page
+    .waitForSelector('[class*="captcha"], [class*="clean"], button:has-text("입력완료")', {
       state: 'hidden',
       timeout: 120000,
+    })
+    .catch(async () => {
+      // 폴백: 좌석 맵이 보일 때까지 대기
+      await page.waitForSelector('svg, canvas, [class*="seat-map"]', { timeout: 120000 });
     });
-  });
 
   log('✅ 보안문자 통과');
   await sleep(1000);
 }
 
 // ─────────────────────────────────────────────
-// 잔디석 선택 → 직접선택 → 좌석 클릭
+// 등급 패널에서 목표 등급 클릭
 // ─────────────────────────────────────────────
 
-async function selectSeat(page) {
-  // 좌석 맵 로드 대기
-  await page.waitForSelector('svg, canvas, [class*="seat-map"], [class*="seatmap"]', {
-    timeout: 15000,
-  });
-  log('🗺️  좌석 맵 로드 완료');
-  await sleep(1000);
+async function clickTargetGradeInPanel(page, targetGrade) {
+  log(`🎫 등급 선택: "${targetGrade}"`);
 
-  // ── Step 1: 잔디석 영역 클릭 ──────────────────
-  log('🟢 잔디석 영역 클릭 시도...');
+  // 우측 등급 목록에서 텍스트 매칭으로 클릭
+  // 가용 석수가 0인 경우 경고
+  const gradeItems = page.locator('li, [class*="grade-item"], [class*="seat-grade"]');
+  const count = await gradeItems.count();
 
-  // 방법 1: 텍스트 레이블로 클릭
-  const jandikLabel = page.locator('text=잔디석').first();
-  if (await jandikLabel.count() > 0) {
-    await jandikLabel.click();
-  } else {
-    // 방법 2: 좌측 등급 목록에서 잔디석 클릭
-    await page.locator('[class*="grade-list"] li:has-text("잔디석"), [class*="legend"]:has-text("잔디석")').first().click();
+  for (let i = 0; i < count; i++) {
+    const item = gradeItems.nth(i);
+    const text = await item.textContent().catch(() => '');
+    if (!text.includes(targetGrade)) continue;
+
+    // "0 석" 인 경우 경고만 출력 (시도는 함)
+    const seatMatch = text.match(/(\d+)\s*석/);
+    const seatCount = seatMatch ? parseInt(seatMatch[1]) : -1;
+    if (seatCount === 0) {
+      log(`⚠️  "${targetGrade}" 현재 0석. 오픈 후 갱신될 수 있으니 계속 진행...`);
+    }
+
+    await item.click();
+    log(`✅ "${targetGrade}" 클릭 완료`);
+    await sleep(600);
+    return;
   }
-  await sleep(800);
 
-  // ── Step 2: 좌석 유형 선택 팝업 → 잔디석 직접선택 ──
-  log('📋 좌석 유형 선택 팝업 처리...');
+  throw new Error(`등급 "${targetGrade}"을 목록에서 찾을 수 없습니다.`);
+}
+
+// ─────────────────────────────────────────────
+// 하위 구역(섹션) 선택
+// ─────────────────────────────────────────────
+
+async function selectBestSubSection(page, ticketCount) {
+  // 구역 목록이 나타나는지 잠시 대기
+  await sleep(600);
+
+  // 하위 구역 항목 탐색 (예: "405구역 2석")
+  const subItems = page.locator(
+    '[class*="sub"] li, [class*="section-item"], [class*="zone-item"], li[class*="area"]'
+  );
+  const count = await subItems.count();
+  if (count === 0) return; // 구역 없으면 바로 진행
+
+  log(`📍 하위 구역 선택 (요청 ${ticketCount}장)...`);
+
+  // 필요한 장수 이상인 첫 번째 구역 선택
+  for (let i = 0; i < count; i++) {
+    const item = subItems.nth(i);
+    const text = await item.textContent().catch(() => '');
+    const seatMatch = text.match(/(\d+)\s*석/);
+    const available = seatMatch ? parseInt(seatMatch[1]) : 0;
+
+    if (available >= ticketCount) {
+      log(`   → ${text.trim()} 선택`);
+      await item.click();
+      await sleep(600);
+      return;
+    }
+  }
+
+  // 부족해도 가장 많은 구역 선택
+  let maxCount = 0;
+  let maxIdx = 0;
+  for (let i = 0; i < count; i++) {
+    const text = await subItems.nth(i).textContent().catch(() => '');
+    const m = text.match(/(\d+)\s*석/);
+    const n = m ? parseInt(m[1]) : 0;
+    if (n > maxCount) { maxCount = n; maxIdx = i; }
+  }
+  log(`⚠️  ${ticketCount}석 이상 구역 없음. 가용 최대(${maxCount}석) 구역 선택`);
+  await subItems.nth(maxIdx).click();
+  await sleep(600);
+}
+
+// ─────────────────────────────────────────────
+// 좌석 유형 선택 팝업 처리 (잔디석/외야커플석 등)
+// ─────────────────────────────────────────────
+
+async function handleSeatTypePopup(page, targetGrade) {
   try {
-    await page.waitForSelector('text=좌석 유형 선택', { timeout: 5000 });
+    await page.waitForSelector('text=좌석 유형 선택', { timeout: 3000 });
+    log('📋 좌석 유형 선택 팝업 처리...');
 
-    // 잔디석 섹션의 직접선택 버튼 (두 번째 버튼 = 잔디석)
-    const directBtns = page.locator('button:has-text("직접선택")');
-    const btnCount = await directBtns.count();
-    // 외야커플석(첫번째) / 잔디석(두번째)
-    await directBtns.nth(btnCount > 1 ? 1 : 0).click();
-    log('✅ 잔디석 직접선택 클릭');
+    // 팝업 내 목표 등급에 해당하는 직접선택 버튼 클릭
+    // 팝업 구조: [등급명 텍스트] + [직접선택 버튼] 반복
+    const sections = page.locator('[class*="type-item"], [class*="seat-type"], .modal li, [role="dialog"] li');
+    const count = await sections.count();
+
+    for (let i = 0; i < count; i++) {
+      const sec = sections.nth(i);
+      const text = await sec.textContent().catch(() => '');
+      if (text.includes(targetGrade) || targetGrade.includes('잔디') && text.includes('잔디')) {
+        const btn = sec.locator('button:has-text("직접선택")');
+        if (await btn.count() > 0) {
+          await btn.click();
+          log(`✅ "${targetGrade}" 직접선택 클릭`);
+          await sleep(500);
+          return;
+        }
+      }
+    }
+
+    // 폴백: 마지막 직접선택 버튼 (잔디석은 두 번째)
+    const allDirect = page.locator('button:has-text("직접선택")');
+    const btnCount = await allDirect.count();
+    await allDirect.nth(btnCount - 1).click();
+    await sleep(500);
   } catch {
-    // 팝업이 안 떴으면 이미 직접 선택 뷰
+    // 팝업 없음 - 정상
   }
+}
 
-  // 확인 팝업
-  await handleConfirmPopup(page, '좌석 유형 확인');
-  await sleep(800);
+// ─────────────────────────────────────────────
+// 사용 가능한 좌석 N장 클릭
+// ─────────────────────────────────────────────
 
-  // ── Step 3: 사용 가능한 잔디석 좌석 클릭 ──────────
-  log('🪑 사용 가능한 좌석 탐색...');
+async function clickAvailableSeats(page, ticketCount) {
+  log(`🪑 사용 가능한 좌석 ${ticketCount}장 선택 중...`);
 
-  const clicked = await page.evaluate(() => {
-    // 잔디석 초록색 HEX 범위 (실제 색상에 따라 조정 가능)
-    const GREEN_FILLS = ['#4a8a4c', '#5b8c5a', '#4d8b47', '#528a4e', '#3d7a40'];
+  let clicked = 0;
 
-    function isGreenFill(fill) {
-      if (!fill) return false;
-      const f = fill.toLowerCase().trim();
-      if (GREEN_FILLS.some((g) => f.startsWith(g))) return true;
-      // rgb 형태도 처리
-      const match = f.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-      if (match) {
-        const [, r, g, b] = match.map(Number);
-        return g > r + 20 && g > b + 20 && g > 80; // 초록 계열
-      }
-      return false;
-    }
+  // SVG/Canvas 기반 좌석 맵에서 사용 가능한 좌석 탐색
+  for (let attempt = 0; attempt < 5 && clicked < ticketCount; attempt++) {
+    const newClicks = await page.evaluate(
+      ({ needed }) => {
+        // 사용 불가(회색/흰색) 판별 함수
+        function isUnavailableColor(fill) {
+          if (!fill || fill === 'none' || fill === 'transparent') return true;
+          const f = fill.toLowerCase().trim();
+          // 회색/흰색 계열 필터
+          const grayPatterns = [
+            /^#[c-f][c-f][c-f]/i, // #ccc~#fff
+            /^#[89a-b][89a-b][89a-b]/i,
+            /^rgb\(\s*([2-9]\d\d|1[6-9]\d)\s*,\s*([2-9]\d\d|1[6-9]\d)\s*,\s*([2-9]\d\d|1[6-9]\d)/,
+            'none', 'transparent', 'white', '#fff', '#ffffff',
+          ];
+          for (const p of grayPatterns) {
+            if (p instanceof RegExp ? p.test(f) : f === p) return true;
+          }
+          return false;
+        }
 
-    // SVG rect/circle/path 중 초록색이고 클릭 가능한 것
-    const candidates = [
-      ...document.querySelectorAll('rect, circle, path, [class*="seat"]'),
-    ];
+        // 클래스 기반 우선 탐색
+        const byClass = Array.from(
+          document.querySelectorAll('[class*="seat"]:not([class*="disabled"]):not([class*="sold"]):not([class*="empty"])')
+        ).filter((el) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        });
 
-    for (const el of candidates) {
-      const fill =
-        el.getAttribute('fill') ||
-        el.getAttribute('data-color') ||
-        window.getComputedStyle(el).fill;
+        // SVG 요소 탐색 (색상 기반)
+        const bySvg = Array.from(document.querySelectorAll('rect, circle')).filter((el) => {
+          const fill = el.getAttribute('fill') || window.getComputedStyle(el).fill;
+          if (isUnavailableColor(fill)) return false;
+          const cls = (el.className?.baseVal || '').toLowerCase();
+          if (cls.includes('disabled') || cls.includes('sold') || cls.includes('bg')) return false;
+          const r = el.getBoundingClientRect();
+          return r.width >= 4 && r.width <= 30; // 좌석 크기 범위 필터
+        });
 
-      // 클릭 불가 요소 스킵
-      const cls = el.className?.toString() || '';
-      if (cls.includes('disabled') || cls.includes('sold') || cls.includes('empty')) continue;
-
-      if (isGreenFill(fill)) {
-        el.click();
-        return true;
-      }
-    }
-
-    // Fallback: class에 available 포함된 잔디석 좌석
-    const available = document.querySelector(
-      '[class*="available"][class*="grass"], [class*="seat-on"][data-grade*="잔디"], [data-available="true"]'
+        const candidates = byClass.length > 0 ? byClass : bySvg;
+        let count = 0;
+        for (const el of candidates) {
+          if (count >= needed) break;
+          el.click();
+          count++;
+        }
+        return count;
+      },
+      { needed: ticketCount - clicked }
     );
-    if (available) {
-      available.click();
-      return true;
-    }
 
-    return false;
-  });
-
-  if (!clicked) {
-    log('⚠️  자동 좌석 클릭 실패. 직접 좌석을 선택해주세요.');
-  } else {
-    log('✅ 좌석 클릭 완료');
+    clicked += newClicks;
+    if (clicked < ticketCount) await sleep(500);
   }
 
-  // 좌석 선택 후 팝업 처리
+  if (clicked === 0) {
+    log('⚠️  자동 좌석 클릭 실패. 직접 선택해주세요.');
+  } else {
+    log(`✅ 좌석 ${clicked}/${ticketCount}장 클릭 완료`);
+  }
+
+  // 좌석 선택 후 확인 팝업
   await handleConfirmPopup(page, '좌석 확인');
   await sleep(500);
+}
 
-  // ── Step 4: 다음단계 클릭 ──────────────────────
+// ─────────────────────────────────────────────
+// 전체 좌석 선택 플로우
+// ─────────────────────────────────────────────
+
+async function selectSeat(page, config) {
+  const { targetGrade, ticketCount } = config;
+
+  // 좌석 맵/등급 패널 로드 대기
+  await page.waitForSelector(
+    'svg, canvas, [class*="seat-map"], [class*="grade"], [class*="등급"]',
+    { timeout: 15000 }
+  );
+  log('🗺️  좌석 선택 화면 로드 완료');
+  await sleep(800);
+
+  // 1. 등급 패널에서 목표 등급 클릭
+  await clickTargetGradeInPanel(page, targetGrade);
+
+  // 2. 하위 구역 선택 (있는 경우)
+  await selectBestSubSection(page, ticketCount);
+
+  // 3. 좌석 유형 선택 팝업 처리 (잔디석/외야커플석 등)
+  await handleSeatTypePopup(page, targetGrade);
+
+  // 팝업 닫힌 후 확인 팝업 처리
+  await handleConfirmPopup(page, '유형 확인');
+
+  // 4. 사용 가능한 좌석 N장 클릭
+  await clickAvailableSeats(page, ticketCount);
+
+  // 5. 다음단계
   log('➡️  다음단계 클릭...');
   await page.locator('button:has-text("다음단계"), a:has-text("다음단계")').first().click();
   log('🎉 좌석 선택 완료! 이후 단계(권종/배송/결제)를 진행해주세요.');
@@ -296,7 +403,7 @@ async function selectSeat(page) {
 async function runTicketBot(config) {
   const browser = await chromium.launch({
     headless: false,
-    slowMo: 80,
+    slowMo: 60,
     args: ['--start-maximized'],
   });
 
@@ -309,31 +416,24 @@ async function runTicketBot(config) {
   const page = await context.newPage();
 
   try {
-    // 1. 로그인
     await login(page, config);
 
-    // 2. 스포츠 페이지 이동 후 오픈 대기
     log(`📍 ${SPORTS_PAGE} 이동...`);
     await page.goto(SPORTS_PAGE, { waitUntil: 'domcontentloaded' });
 
     await waitForOpenTime(config.openTime);
 
-    // 3. 예매하기 클릭
     await clickBookingButton(page, config.targetGameDate);
 
-    // 4. 예매안내 팝업 확인
     await handleConfirmPopup(page, '예매안내');
 
-    // 5. 보안문자 대기 (사용자 직접 입력)
     await waitForCaptchaDone(page);
 
-    // 6. 잔디석 선택 → 다음단계
-    await selectSeat(page);
+    await selectSeat(page, config);
   } catch (err) {
-    log(`❌ 오류 발생: ${err.message}`);
-    log('   브라우저를 열어둘 테니 수동으로 진행해주세요.');
-    // 오류 시 브라우저 닫지 않음
-    return;
+    log(`❌ 오류: ${err.message}`);
+    log('   브라우저는 열어둡니다. 수동으로 이어서 진행해주세요.');
+    // 오류 시 브라우저 유지
   }
 }
 
