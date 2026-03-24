@@ -32,18 +32,16 @@ function log(msg) {
 
 async function login(page, config) {
   log('🔐 티켓링크 메인 접속...');
-  await page.goto('https://www.ticketlink.co.kr/home', { waitUntil: 'domcontentloaded' });
-  await sleep(1500);
+  await page.goto('https://www.ticketlink.co.kr/home', { waitUntil: 'networkidle' });
 
-  // 로그인 버튼 JS 클릭
+  // 팝업 제거
   await page.evaluate(() => {
-    const loginEl = Array.from(document.querySelectorAll('a')).find(
-      a => a.textContent.trim() === '로그인'
-    );
-    if (loginEl) loginEl.click();
+    document.querySelectorAll('.full_page_pop').forEach(el => el.remove());
   });
-  log('🔐 로그인 클릭 완료');
-  await sleep(2000);
+
+  log('🔐 로그인 버튼 클릭...');
+  await page.locator('a.header_util_link:has-text("로그인")').click();
+  await sleep(1500);
 
   // 로그인 모달 대기 후 모달 안의 PAYCO 버튼 클릭 (헤더 PAYCO 링크 제외)
   await page.waitForSelector('a[href*="payco"]:not(.header_util_link), button[class*="payco"], img[alt*="PAYCO"]', { timeout: 10000 });
@@ -526,27 +524,9 @@ async function runTicketBot(config) {
     viewport: { width: 1280, height: 900 },
   });
 
-  // 봇 감지 우회 + 팝업 자동 제거
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    window.close = () => {};
-
-    // full_page_pop 배너만 자동 제거 (로그인 모달 dimmed는 유지)
-    const observer = new MutationObserver(() => {
-      document.querySelectorAll('.full_page_pop').forEach(el => el.remove());
-    });
-    document.addEventListener('DOMContentLoaded', () => {
-      observer.observe(document.body, { childList: true, subtree: true });
-      document.querySelectorAll('.full_page_pop').forEach(el => el.remove());
-    });
-  });
-
   const page = await context.newPage();
 
-  // 팝업 알림 자동 처리 (ErrorCode:200 등)
-  page.on('dialog', async (dialog) => {
-    await dialog.accept();
-  });
+  page.on('dialog', async (dialog) => { await dialog.accept(); });
 
   try {
     await login(page, config);
