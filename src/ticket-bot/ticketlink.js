@@ -3,11 +3,8 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 
-// Mac 시스템 Chrome 경로 (봇 감지 우회)
-function getChromePath() {
-  const mac = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-  try { fs.accessSync(mac); return mac; } catch { return undefined; }
-}
+const CHROME_EXE = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const CHROME_PROFILE = `${process.env.HOME}/Library/Application Support/Google/Chrome`;
 
 const SPORTS_PAGE = 'https://www.ticketlink.co.kr/sports/137/63';
 const RESERVE_BASE = 'https://www.ticketlink.co.kr/reserve/plan/schedule';
@@ -505,37 +502,21 @@ async function selectSeat(page, config) {
 // ─────────────────────────────────────────────
 
 async function runTicketBot(config) {
-  const chromePath = getChromePath();
-  if (chromePath) log('🌐 시스템 Chrome 사용 (봇 감지 우회)');
+  log('🌐 실제 Chrome 프로필로 실행 (봇 감지 우회)');
+  log('   ⚠️  실행 전 Chrome을 완전히 종료해주세요.');
 
-  const launchOptions = {
+  // 실제 Chrome 프로필 사용 — 쿠키/세션/핑거프린트 그대로 유지
+  const context = await chromium.launchPersistentContext(CHROME_PROFILE, {
+    executablePath: CHROME_EXE,
     headless: false,
     slowMo: 60,
     args: ['--start-maximized', '--disable-blink-features=AutomationControlled'],
-  };
-  // Mac 시스템 Chrome 사용 (channel 방식 우선)
-  if (chromePath) launchOptions.executablePath = chromePath;
-
-  const browser = await chromium.launch(launchOptions);
-
-  const context = await browser.newContext({
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 900 },
   });
 
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    window.close = () => {};
-    // alert/confirm 무력화 (ErrorCode:200 팝업 방지)
-    window.alert = () => {};
-    window.confirm = () => true;
-  });
-
-  const page = await context.newPage();
+  const page = context.pages()[0] || await context.newPage();
 
   page.on('dialog', async (dialog) => {
-    try { await dialog.accept(); } catch { /* 페이지 이미 닫힘 */ }
+    try { await dialog.accept(); } catch { /* ignore */ }
   });
 
   try {
