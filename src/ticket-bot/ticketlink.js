@@ -487,7 +487,10 @@ async function runTicketBot(config) {
   const browser = await chromium.launch({
     headless: false,
     slowMo: 60,
-    args: ['--start-maximized'],
+    args: [
+      '--start-maximized',
+      '--disable-blink-features=AutomationControlled',
+    ],
   });
 
   const context = await browser.newContext({
@@ -496,7 +499,17 @@ async function runTicketBot(config) {
     viewport: { width: 1280, height: 900 },
   });
 
+  // navigator.webdriver 숨기기 (봇 감지 우회)
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  });
+
   const page = await context.newPage();
+
+  // 팝업 알림 자동 처리 (ErrorCode:200 등)
+  page.on('dialog', async (dialog) => {
+    await dialog.accept();
+  });
 
   try {
     await login(page, config);
