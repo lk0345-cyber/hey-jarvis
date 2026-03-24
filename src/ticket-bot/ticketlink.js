@@ -1,6 +1,13 @@
 'use strict';
 
 const { chromium } = require('playwright');
+const fs = require('fs');
+
+// Mac 시스템 Chrome 경로 (봇 감지 우회)
+function getChromePath() {
+  const mac = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  try { fs.accessSync(mac); return mac; } catch { return undefined; }
+}
 
 const SPORTS_PAGE = 'https://www.ticketlink.co.kr/sports/137/63';
 const RESERVE_BASE = 'https://www.ticketlink.co.kr/reserve/plan/schedule';
@@ -484,9 +491,13 @@ async function selectSeat(page, config) {
 // ─────────────────────────────────────────────
 
 async function runTicketBot(config) {
+  const chromePath = getChromePath();
+  if (chromePath) log('🌐 시스템 Chrome 사용 (봇 감지 우회)');
+
   const browser = await chromium.launch({
     headless: false,
     slowMo: 60,
+    executablePath: chromePath,
     args: [
       '--start-maximized',
       '--disable-blink-features=AutomationControlled',

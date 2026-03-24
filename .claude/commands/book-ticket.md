@@ -10,30 +10,31 @@
 예시:
 - `/book-ticket 03.31 "1루 내야지정석B" 2`
 - `/book-ticket 04.11 잔디석 1`
-- `/book-ticket 03.31 "외야 1루 내야지정석B" 2`
 
 ## 실행 절차
 
 $ARGUMENTS 를 파싱하여 다음 순서로 실행하세요:
 
 1. **인자 파싱**:
-   - 첫 번째 인자: `날짜` (MM.DD 형식, 예: `03.31`)
-   - 두 번째 인자: `좌석등급` (예: `1루 내야지정석B`, `잔디석`)
-   - 세 번째 인자: `매수` (숫자, 기본값 1)
+   - 첫 번째 인자: `날짜` (MM.DD 형식, 예: `03.31`) — 없으면 .env 기본값 사용
+   - 두 번째 인자: `좌석등급` (예: `1루 내야지정석B`) — 없으면 .env 기본값 사용
+   - 세 번째 인자: `매수` (숫자) — 없으면 .env 기본값 사용
 
-2. **Bash 도구로 .env 파일 업데이트**:
+2. **프로젝트 루트 확인**:
    ```bash
-   # TICKETBOT_TARGET_DATE, TICKETBOT_TARGET_GRADE, TICKETBOT_TICKET_COUNT 값을 설정
-   sed -i "s|TICKETBOT_TARGET_DATE=.*|TICKETBOT_TARGET_DATE=<날짜>|" /home/user/hey-jarvis/.env
-   sed -i "s|TICKETBOT_TARGET_GRADE=.*|TICKETBOT_TARGET_GRADE=<좌석등급>|" /home/user/hey-jarvis/.env
-   sed -i "s|TICKETBOT_TICKET_COUNT=.*|TICKETBOT_TICKET_COUNT=<매수>|" /home/user/hey-jarvis/.env
+   git rev-parse --show-toplevel
+   ```
+   이 경로를 PROJECT_ROOT로 사용
+
+3. **인자가 있을 경우 .env 업데이트** (PROJECT_ROOT/.env):
+   - macOS: `sed -i ''` 사용
+   - Linux: `sed -i` 사용
+
+4. **.env 확인** — TICKETBOT_PAYCO_ID, TICKETBOT_PAYCO_PW가 비어있으면 사용자에게 입력 요청
+
+5. **봇 실행**:
+   ```bash
+   cd <PROJECT_ROOT> && pnpm ticket
    ```
 
-3. **.env 설정 확인** - TICKETBOT_PAYCO_ID, TICKETBOT_PAYCO_PW가 비어있으면 사용자에게 입력 요청
-
-4. **봇 실행**:
-   ```bash
-   cd /home/user/hey-jarvis && pnpm ticket
-   ```
-
-5. 실행 후 터미널 출력 내용을 사용자에게 요약하여 보고
+6. 실행 결과를 사용자에게 요약 보고
