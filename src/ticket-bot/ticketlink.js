@@ -1,6 +1,8 @@
 'use strict';
 
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+chromium.use(StealthPlugin());
 const fs = require('fs');
 
 const CHROME_EXE = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -531,8 +533,8 @@ async function runTicketBot(config) {
     viewport: { width: 1280, height: 900 },
   });
 
+  // stealth 플러그인이 모든 감지 우회 처리함
   await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     window.alert = () => {};
     window.confirm = () => true;
   });
