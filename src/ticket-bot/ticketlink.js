@@ -66,11 +66,11 @@ async function login(page, config) {
     await paycoPopup.locator('button:has-text("확인")').click();
   } catch { /* 인증 없음 */ }
 
-  // 팝업이 닫히고 메인 페이지가 로그인 완료 상태가 될 때까지 대기
-  await Promise.race([
-    paycoPopup.waitForEvent('close', { timeout: 20000 }),
-    page.waitForURL('**/ticketlink.co.kr/**', { timeout: 20000 }),
-  ]);
+  // 팝업이 닫힐 때까지 대기
+  try {
+    await paycoPopup.waitForEvent('close', { timeout: 20000 });
+  } catch { /* 이미 닫혔거나 타임아웃 */ }
+  await sleep(2000);
   log('✅ 로그인 완료');
 }
 
@@ -194,6 +194,15 @@ async function handleQueueIfAppears(page) {
 // ─────────────────────────────────────────────
 
 async function enterReservePage(page, config) {
+  // 로그인 후 나타나는 팝업/오버레이 제거
+  await sleep(1000);
+  await page.evaluate(() => {
+    document.querySelectorAll('.full_page_pop, .layer_pop, .dimmed').forEach(el => {
+      // 로그인 모달이 아닌 경우만 제거
+      if (!el.closest('.login_layer')) el.remove();
+    });
+  }).catch(() => {});
+
   const { targetGameDate, openTime } = config;
 
   // ── 전략 A: 사전 URL 추출 ──────────────────────
