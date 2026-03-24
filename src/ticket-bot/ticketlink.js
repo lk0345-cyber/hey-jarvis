@@ -43,6 +43,7 @@ async function login(page, config) {
     if (loginEl) loginEl.click();
   });
   log('🔐 로그인 클릭 완료');
+  await sleep(2000);
 
   // 로그인 모달 대기 후 모달 안의 PAYCO 버튼 클릭 (헤더 PAYCO 링크 제외)
   await page.waitForSelector('a[href*="payco"]:not(.header_util_link), button[class*="payco"], img[alt*="PAYCO"]', { timeout: 10000 });
@@ -530,13 +531,13 @@ async function runTicketBot(config) {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     window.close = () => {};
 
-    // full_page_pop 등 방해 요소를 DOM 변경 시마다 자동 제거
+    // full_page_pop 배너만 자동 제거 (로그인 모달 dimmed는 유지)
     const observer = new MutationObserver(() => {
-      document.querySelectorAll('.full_page_pop, .dimmed').forEach(el => el.remove());
+      document.querySelectorAll('.full_page_pop').forEach(el => el.remove());
     });
     document.addEventListener('DOMContentLoaded', () => {
       observer.observe(document.body, { childList: true, subtree: true });
-      document.querySelectorAll('.full_page_pop, .dimmed').forEach(el => el.remove());
+      document.querySelectorAll('.full_page_pop').forEach(el => el.remove());
     });
   });
 
