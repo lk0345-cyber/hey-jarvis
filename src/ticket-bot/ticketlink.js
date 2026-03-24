@@ -32,7 +32,7 @@ function log(msg) {
 
 async function login(page, config) {
   log('🔐 티켓링크 메인 접속...');
-  await page.goto('https://www.ticketlink.co.kr', { waitUntil: 'domcontentloaded' });
+  await page.goto('https://www.ticketlink.co.kr/home', { waitUntil: 'domcontentloaded' });
   await sleep(1500);
 
   // 로그인 버튼 JS 클릭
