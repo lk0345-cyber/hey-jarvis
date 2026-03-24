@@ -138,6 +138,11 @@ async function extractScheduleId(page, targetDate) {
 // ─────────────────────────────────────────────
 
 async function waitForOpenTime(openTimeStr) {
+  if (openTimeStr === 'now') {
+    log('⚡ 즉시 예매 모드 — 대기 없이 바로 진행');
+    return;
+  }
+
   const now = new Date();
   const [h, m, s] = openTimeStr.split(':').map(Number);
   const target = new Date(now);
@@ -145,7 +150,7 @@ async function waitForOpenTime(openTimeStr) {
 
   const waitMs = target.getTime() - now.getTime();
   if (waitMs <= 0) {
-    log('⚠️  오픈 시간이 이미 지났습니다. 바로 진행합니다.');
+    log('⚡ 오픈 시간이 이미 지났습니다. 바로 진행합니다.');
     return;
   }
 
