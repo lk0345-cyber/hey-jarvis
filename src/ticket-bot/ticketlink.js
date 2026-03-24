@@ -3,8 +3,20 @@
 const { chromium } = require('patchright');
 const fs = require('fs');
 
-const CHROME_EXE = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const CHROME_PROFILE = `${process.env.HOME}/Library/Application Support/Google/Chrome`;
+// 환경에 따라 Chrome 경로 자동 감지
+function getChromePath() {
+  const paths = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', // Mac
+    '/root/.cache/ms-playwright/chromium-1194/chrome-linux/chrome',  // 클라우드
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium-browser',
+  ];
+  for (const p of paths) {
+    try { fs.accessSync(p); return p; } catch { /* 없음 */ }
+  }
+  return undefined; // patchright 기본값 사용
+}
+const IS_MAC = process.platform === 'darwin';
 
 const SPORTS_PAGE = 'https://www.ticketlink.co.kr/sports/137/63';
 const RESERVE_BASE = 'https://www.ticketlink.co.kr/reserve/plan/schedule';
@@ -523,19 +535,23 @@ async function selectSeat(page, config) {
 // ─────────────────────────────────────────────
 
 async function runTicketBot(config) {
-  log('🌐 시스템 Chrome 실행...');
+  const chromePath = getChromePath();
+  const headless = !IS_MAC;
+  log(`🌐 Chrome 실행... (${IS_MAC ? 'Mac' : '클라우드'} / ${headless ? 'headless' : 'headed'})`);
+
   const browser = await chromium.launch({
-    headless: false,
-    executablePath: CHROME_EXE,
+    headless,
+    executablePath: chromePath,
     args: [
       '--start-maximized',
       '--disable-blink-features=AutomationControlled',
       '--no-first-run',
       '--no-default-browser-check',
+      ...(headless ? ['--no-sandbox', '--disable-setuid-sandbox'] : []),
     ],
     ignoreDefaultArgs: [
-      '--enable-automation',        // 자동화 배너 제거
-      '--disable-extensions',       // 감지 핑거프린트 제거
+      '--enable-automation',
+      '--disable-extensions',
       '--disable-component-update',
       '--disable-default-apps',
       '--disable-popup-blocking',
