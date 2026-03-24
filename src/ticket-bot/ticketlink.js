@@ -504,18 +504,41 @@ async function selectSeat(page, config) {
 // 메인 진입점
 // ─────────────────────────────────────────────
 
+async function launchChromeWithCDP() {
+  const { spawn } = require('child_process');
+  const CDP_URL = 'http://localhost:9222';
+
+  // 이미 실행 중인 Chrome에 연결 시도
+  try {
+    const browser = await chromium.connectOverCDP(CDP_URL, { timeout: 2000 });
+    log('🌐 기존 Chrome에 CDP 연결됨');
+    return browser;
+  } catch { /* 실행 중 아님 */ }
+
+  // Chrome을 자동화 플래그 없이 직접 실행 (봇 감지 없음)
+  log('🌐 Chrome 원격 디버깅 모드로 실행 중...');
+  spawn(CHROME_EXE, [
+    '--remote-debugging-port=9222',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--start-maximized',
+  ], { detached: true, stdio: 'ignore' });
+
+  // Chrome 시작 대기
+  for (let i = 0; i < 10; i++) {
+    await sleep(1000);
+    try {
+      const browser = await chromium.connectOverCDP(CDP_URL, { timeout: 1000 });
+      log('🌐 Chrome CDP 연결 완료');
+      return browser;
+    } catch { /* 아직 시작 중 */ }
+  }
+  throw new Error('Chrome 시작 실패 — 수동으로 Chrome을 실행해주세요.');
+}
+
 async function runTicketBot(config) {
-  log('🌐 실제 Chrome 프로필로 실행 (봇 감지 우회)');
-  log('   ⚠️  실행 전 Chrome을 완전히 종료해주세요.');
-
-  // 실제 Chrome 프로필 사용 — 쿠키/세션/핑거프린트 그대로 유지
-  const context = await chromium.launchPersistentContext(CHROME_PROFILE, {
-    executablePath: CHROME_EXE,
-    headless: false,
-    slowMo: 60,
-    args: ['--start-maximized', '--disable-blink-features=AutomationControlled'],
-  });
-
+  const browser = await launchChromeWithCDP();
+  const context = browser.contexts()[0] || (await browser.newContext());
   const page = await context.newPage();
 
   page.on('dialog', async (dialog) => {
