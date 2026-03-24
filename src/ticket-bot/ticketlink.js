@@ -524,6 +524,11 @@ async function runTicketBot(config) {
     viewport: { width: 1280, height: 900 },
   });
 
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    window.close = () => {};
+  });
+
   const page = await context.newPage();
 
   page.on('dialog', async (dialog) => { await dialog.accept(); });
