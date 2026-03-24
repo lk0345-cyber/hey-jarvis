@@ -35,6 +35,16 @@ async function login(page, config) {
   await page.goto('https://www.ticketlink.co.kr', { waitUntil: 'domcontentloaded' });
   await sleep(1500);
 
+  // 전면 팝업 배너 닫기
+  try {
+    await page.locator('.full_page_pop').waitFor({ state: 'visible', timeout: 3000 });
+    await page.evaluate(() => {
+      const pop = document.querySelector('.full_page_pop');
+      if (pop) pop.style.display = 'none';
+    });
+    log('📢 전면 팝업 닫음');
+  } catch { /* 팝업 없음 */ }
+
   log('🔐 로그인 버튼 클릭...');
   await page.locator('a[href*="/login"], a:has-text("로그인")').first().click();
   await sleep(1000);
