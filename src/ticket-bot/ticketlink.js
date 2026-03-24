@@ -35,20 +35,22 @@ async function login(page, config) {
   await page.goto('https://www.ticketlink.co.kr', { waitUntil: 'domcontentloaded' });
   await sleep(1500);
 
-  // 전면 팝업 배너 및 방해 요소 제거 후 로그인 JS 클릭
+  // 로그인 버튼 JS 클릭
   await page.evaluate(() => {
-    // 전면 팝업 제거
-    document.querySelectorAll('.full_page_pop, .layer_wrap, .dim').forEach(el => el.remove());
-    // 로그인 버튼 JS 클릭
     const loginEl = Array.from(document.querySelectorAll('a')).find(
       a => a.textContent.trim() === '로그인'
     );
     if (loginEl) loginEl.click();
   });
   log('🔐 로그인 클릭 완료');
-  await sleep(1000);
 
-  await page.locator('a[href*="payco"], button[class*="payco"], img[alt*="PAYCO"]').first().click();
+  // 로그인 모달 또는 페이지에서 PAYCO 버튼 대기 후 클릭
+  await page.waitForSelector('a[href*="payco"], button[class*="payco"], img[alt*="PAYCO"]', { timeout: 10000 });
+  await page.evaluate(() => {
+    const paycoEl = document.querySelector('a[href*="payco"], button[class*="payco"], img[alt*="PAYCO"]');
+    if (paycoEl) paycoEl.click();
+  });
+  log('🔐 PAYCO 클릭 완료');
 
   await page.waitForURL('**/payco.com/**', { timeout: 15000 });
   log('📱 PAYCO 로그인 페이지 진입');
@@ -523,11 +525,19 @@ async function runTicketBot(config) {
     viewport: { width: 1280, height: 900 },
   });
 
-  // 봇 감지 우회
+  // 봇 감지 우회 + 팝업 자동 제거
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    // window.close() 차단 (봇 감지 시 강제 종료 방지)
     window.close = () => {};
+
+    // full_page_pop 등 방해 요소를 DOM 변경 시마다 자동 제거
+    const observer = new MutationObserver(() => {
+      document.querySelectorAll('.full_page_pop, .dimmed').forEach(el => el.remove());
+    });
+    document.addEventListener('DOMContentLoaded', () => {
+      observer.observe(document.body, { childList: true, subtree: true });
+      document.querySelectorAll('.full_page_pop, .dimmed').forEach(el => el.remove());
+    });
   });
 
   const page = await context.newPage();
