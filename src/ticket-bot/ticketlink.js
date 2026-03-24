@@ -66,11 +66,14 @@ async function login(page, config) {
     await paycoPopup.locator('button:has-text("확인")').click();
   } catch { /* 인증 없음 */ }
 
-  // 팝업이 닫힐 때까지 대기
-  try {
-    await paycoPopup.waitForEvent('close', { timeout: 20000 });
-  } catch { /* 이미 닫혔거나 타임아웃 */ }
-  await sleep(2000);
+  // 팝업 처리 완료 대기 후 강제 정리
+  await sleep(3000);
+  if (!paycoPopup.isClosed()) {
+    await paycoPopup.close().catch(() => {});
+  }
+
+  // 메인 페이지를 스포츠 페이지로 직접 이동 (리다이렉트 루프 차단)
+  await page.goto('https://www.ticketlink.co.kr/sports', { waitUntil: 'domcontentloaded' });
   log('✅ 로그인 완료');
 }
 
