@@ -508,15 +508,15 @@ async function runTicketBot(config) {
   const chromePath = getChromePath();
   if (chromePath) log('🌐 시스템 Chrome 사용 (봇 감지 우회)');
 
-  const browser = await chromium.launch({
+  const launchOptions = {
     headless: false,
     slowMo: 60,
-    executablePath: chromePath,
-    args: [
-      '--start-maximized',
-      '--disable-blink-features=AutomationControlled',
-    ],
-  });
+    args: ['--start-maximized', '--disable-blink-features=AutomationControlled'],
+  };
+  // Mac 시스템 Chrome 사용 (channel 방식 우선)
+  if (chromePath) launchOptions.executablePath = chromePath;
+
+  const browser = await chromium.launch(launchOptions);
 
   const context = await browser.newContext({
     userAgent:
@@ -527,11 +527,16 @@ async function runTicketBot(config) {
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     window.close = () => {};
+    // alert/confirm 무력화 (ErrorCode:200 팝업 방지)
+    window.alert = () => {};
+    window.confirm = () => true;
   });
 
   const page = await context.newPage();
 
-  page.on('dialog', async (dialog) => { await dialog.accept(); });
+  page.on('dialog', async (dialog) => {
+    try { await dialog.accept(); } catch { /* 페이지 이미 닫힘 */ }
+  });
 
   try {
     await login(page, config);
