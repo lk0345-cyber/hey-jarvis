@@ -543,6 +543,16 @@ async function runTicketBot(config) {
     try { await dialog.accept(); } catch { /* ignore */ }
   });
 
+  // 전면 팝업 배너 리소스 요청 차단 (아예 안 뜨게)
+  await page.route('**/*', (route) => {
+    const url = route.request().url();
+    if (url.includes('FlashBanner') || url.includes('full_page_pop')) {
+      route.abort();
+    } else {
+      route.continue();
+    }
+  });
+
   try {
     await login(page, config);
     await enterReservePage(page, config);
