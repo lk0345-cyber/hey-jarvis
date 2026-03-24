@@ -29,12 +29,15 @@ function log(msg) {
 
 async function login(page, config) {
   log('🔐 티켓링크 메인 접속...');
-  await page.goto('https://www.ticketlink.co.kr/home', { waitUntil: 'networkidle' });
+  await page.goto('https://www.ticketlink.co.kr/home', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await sleep(2000);
 
   // 팝업 제거
-  await page.evaluate(() => {
-    document.querySelectorAll('.full_page_pop').forEach(el => el.remove());
-  });
+  try {
+    await page.evaluate(() => {
+      document.querySelectorAll('.full_page_pop').forEach(el => el.remove());
+    });
+  } catch { /* ignore */ }
 
   log('🔐 로그인 버튼 클릭...');
   await page.locator('a.header_util_link:has-text("로그인")').click();
@@ -513,7 +516,7 @@ async function runTicketBot(config) {
     args: ['--start-maximized', '--disable-blink-features=AutomationControlled'],
   });
 
-  const page = context.pages()[0] || await context.newPage();
+  const page = await context.newPage();
 
   page.on('dialog', async (dialog) => {
     try { await dialog.accept(); } catch { /* ignore */ }
