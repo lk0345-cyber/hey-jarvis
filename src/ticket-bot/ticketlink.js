@@ -519,6 +519,7 @@ async function launchChromeWithCDP() {
   log('🌐 Chrome 원격 디버깅 모드로 실행 중...');
   const child = spawn(CHROME_EXE, [
     '--remote-debugging-port=9222',
+    '--profile-directory=Default',
     '--no-first-run',
     '--no-default-browser-check',
     '--start-maximized',
