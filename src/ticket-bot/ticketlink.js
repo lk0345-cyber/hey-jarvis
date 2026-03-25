@@ -645,40 +645,43 @@ async function findSeatsByScreenshot(page, needed) {
   // viewport 기준 좌표 = 픽셀 좌표 / devicePixelRatio
   const dpr = await page.evaluate(() => window.devicePixelRatio || 1);
 
-  // 좌석 맵 탐색 영역: 화면 전체에서 UI 패널 제외
-  // - x: 0 ~ 화면 오른쪽 30% 까지 (오른쪽은 등급 패널)
-  // - y: 화면 위 20% 이후 (헤더/그레이드 패널 제외)
+  // 좌석 맵 탐색 영역
+  // - xMin: 8% (좌측 여백 제외)
+  // - xMax: 72% (우측 등급 패널 제외)
+  // - yMin: 45% (상단 헤더/버튼/방향안내 모두 제외 → 실제 좌석은 중하단부터)
+  // - yMax: 92%
+  const xMin = Math.floor(W * 0.08);
   const xMax = Math.floor(W * 0.72);
-  const yMin = Math.floor(H * 0.20);
+  const yMin = Math.floor(H * 0.45);
   const yMax = Math.floor(H * 0.92);
 
-  // 색상 좌석 픽셀 탐색: 회색/흰색/검정 이 아닌 채도 높은 픽셀
-  // 채도(saturation) = max(R,G,B) - min(R,G,B)
+  // 색상 좌석 픽셀 탐색: 회색/흰색/검정이 아닌 채도 높은 픽셀
+  // 단, 매우 밝은 주황/노랑 UI 버튼 색(R>220, G>140) 제외
   const colored = [];
-  const STEP = 2; // 2픽셀마다 샘플링 (속도/정확도 균형)
+  const STEP = 2;
 
   for (let py = yMin; py < yMax; py += STEP) {
-    for (let px = 0; px < xMax; px += STEP) {
+    for (let px = xMin; px < xMax; px += STEP) {
       const i = (py * W + px) * 4;
       const r = d[i], g = d[i+1], b = d[i+2], a = d[i+3];
-      if (a < 200) continue;                                   // 투명 제외
-      if (r > 210 && g > 210 && b > 210) continue;            // 흰색/밝은 배경 제외
+      if (a < 200) continue;
+      if (r > 210 && g > 210 && b > 210) continue;            // 흰색 배경 제외
       if (r < 25 && g < 25 && b < 25) continue;               // 검정 제외
+      if (r > 220 && g > 140) continue;                       // 밝은 주황/노랑 UI 버튼 제외
       const sat = Math.max(r,g,b) - Math.min(r,g,b);
       if (sat < 35) continue;                                  // 회색(무채색) 제외
-      // 채도 있는 픽셀 = 선택 가능한 좌석 후보
       colored.push({ px, py });
     }
   }
 
+  log(`   📸 스캔범위 x[${xMin}~${xMax}] y[${yMin}~${yMax}] 픽셀${W}x${H} dpr=${dpr} 색상픽셀=${colored.length}`);
+
   if (colored.length === 0) {
-    log(`   ⚠️  스크린샷 색상 픽셀 0개 (W=${W} H=${H} dpr=${dpr})`);
     return [];
   }
 
   // 클러스터링: 가까운 픽셀 그룹 → 각 그룹 중심 = 좌석 1개
-  // 픽셀 좌표 기준 gap: 약 8px (viewport 기준 4px * dpr)
-  const GAP = Math.round(10 * dpr);
+  const GAP = Math.round(14 * dpr);
   const clusters = [];
 
   for (const { px, py } of colored) {
@@ -690,18 +693,25 @@ async function findSeatsByScreenshot(page, needed) {
     } else {
       clusters.push({ cx: px, cy: py, sumX: px, sumY: py, n: 1 });
     }
-    if (clusters.length > needed * 20) break; // 충분하면 중단
   }
 
   if (clusters.length === 0) return [];
 
-  // viewport 좌표로 변환 (dpr 나누기)
-  const seats = clusters
-    .sort((a, b) => a.cx - b.cx || a.cy - b.cy) // 왼쪽→오른쪽, 위→아래 순
-    .slice(0, needed * 3)
-    .map(c => ({ x: c.cx / dpr, y: c.cy / dpr }));
+  // 픽셀 수(n)가 많은 클러스터 = 실제 좌석 (UI 요소보다 넓은 면적)
+  // n이 너무 적은 단일 픽셀 노이즈 제거
+  const validClusters = clusters.filter(c => c.n >= 3);
 
-  log(`   📸 스크린샷 색상픽셀=${colored.length} 클러스터=${clusters.length} → ${seats.length}개 후보`);
+  log(`   📸 전체클러스터=${clusters.length} 유효(n≥3)=${validClusters.length}`);
+
+  if (validClusters.length === 0) return clusters.map(c => ({ x: c.cx/dpr, y: c.cy/dpr }));
+
+  // viewport 좌표로 변환 (dpr 나누기), 픽셀 수 내림차순(큰 좌석 우선)
+  const seats = validClusters
+    .sort((a, b) => b.n - a.n)  // 면적 큰 클러스터 먼저
+    .slice(0, needed * 4)
+    .map(c => ({ x: Math.round(c.cx / dpr), y: Math.round(c.cy / dpr), n: c.n }));
+
+  log(`   📸 후보: ${seats.slice(0,5).map(s=>`(${s.x},${s.y})n=${s.n}`).join(' ')}`);
   return seats;
 }
 
