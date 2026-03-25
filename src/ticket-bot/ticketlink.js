@@ -643,7 +643,7 @@ async function handleSeatTypePopup(page, targetGrade) {
 // (pyautogui screenshot 방식과 동일 원리)
 // ─────────────────────────────────────────────
 
-async function findSeatsByScreenshot(page, needed) {
+async function findSeatsByScreenshot(page, needed, { relaxed = false } = {}) {
   // 스크린샷 (PNG Buffer)
   const buf = await page.screenshot({ type: 'png' });
   const png = PNG.sync.read(buf);
@@ -652,18 +652,13 @@ async function findSeatsByScreenshot(page, needed) {
   // viewport 기준 좌표 = 픽셀 좌표 / devicePixelRatio
   const dpr = await page.evaluate(() => window.devicePixelRatio || 1);
 
-  // 좌석 맵 탐색 영역
-  // - xMin: 8% (좌측 여백 제외)
-  // - xMax: 72% (우측 등급 패널 제외)
-  // - yMin: 45% (상단 헤더/버튼/방향안내 모두 제외)
-  // - yMax: 80% (하단 좌석 범례/legend 제외 - 범례는 보통 85%+ 위치)
-  const xMin = Math.floor(W * 0.08);
-  const xMax = Math.floor(W * 0.72);
-  const yMin = Math.floor(H * 0.45);
-  const yMax = Math.floor(H * 0.80);
+  // relaxed 모드: 범위 확대 + 채도 임계값 완화 (색상미감지 재시도용)
+  const xMin = Math.floor(W * 0.05);
+  const xMax = Math.floor(W * (relaxed ? 0.80 : 0.72));
+  const yMin = Math.floor(H * (relaxed ? 0.35 : 0.45));
+  const yMax = Math.floor(H * (relaxed ? 0.88 : 0.80));
+  const SAT_THRESHOLD = relaxed ? 18 : 35;
 
-  // 색상 좌석 픽셀 탐색: 회색/흰색/검정이 아닌 채도 높은 픽셀
-  // 단, 매우 밝은 주황/노랑 UI 버튼 색(R>220, G>140) 제외
   const colored = [];
   const STEP = 2;
 
@@ -676,12 +671,12 @@ async function findSeatsByScreenshot(page, needed) {
       if (r < 25 && g < 25 && b < 25) continue;               // 검정 제외
       if (r > 220 && g > 140) continue;                       // 밝은 주황/노랑 UI 버튼 제외
       const sat = Math.max(r,g,b) - Math.min(r,g,b);
-      if (sat < 35) continue;                                  // 회색(무채색) 제외
+      if (sat < SAT_THRESHOLD) continue;
       colored.push({ px, py });
     }
   }
 
-  log(`   📸 스캔범위 x[${xMin}~${xMax}] y[${yMin}~${yMax}] 픽셀${W}x${H} dpr=${dpr} 색상픽셀=${colored.length}`);
+  log(`   📸 스캔범위 x[${xMin}~${xMax}] y[${yMin}~${yMax}] 픽셀${W}x${H} dpr=${dpr} sat>=${SAT_THRESHOLD} 색상픽셀=${colored.length}${relaxed ? ' [완화모드]' : ''}`);
 
   if (colored.length === 0) {
     return [];
@@ -838,9 +833,24 @@ async function clickAvailableSeats(page, ticketCount) {
   // 클릭 전 스크린샷
   await page.screenshot({ path: `${home}/Desktop/seat-before.png` }).catch(() => {});
 
-  const candidates = await findSeatsByScreenshot(page, ticketCount * 3);
+  // 좌석 탐색 — 실패 시 최대 3회 재시도 (canvas 렌더링 지연 대응)
+  let candidates = [];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const relaxed = attempt >= 2; // 3번째 시도는 완화 모드
+    if (attempt > 0) {
+      log(`   ⏳ canvas 렌더링 대기 후 재탐색 (${attempt + 1}/3)${relaxed ? ' [완화모드]' : ''}...`);
+      await sleep(2000);
+    }
+    candidates = await findSeatsByScreenshot(page, ticketCount * 3, { relaxed });
+    if (candidates.length > 0) break;
+
+    // 디버그용 스크린샷 저장
+    await page.screenshot({ path: `${home}/Desktop/no-candidates-${attempt + 1}.png` }).catch(() => {});
+  }
+
   if (candidates.length === 0) {
-    log('   ❌ 좌석 후보 없음 (스크린샷에서 선택 가능한 좌석 색상 미감지)');
+    log('   ❌ 좌석 후보 없음 — 3회 재시도 모두 실패 (색상미감지)');
+    log(`   💡 ~/Desktop/no-candidates-*.png 확인 후 구역 색상이 맞는지 검토하세요`);
     return 'no_candidates';
   }
   log(`   후보: ${candidates.slice(0, 8).map(s => `(${s.x},${s.y})n=${s.n}`).join(' ')}`);
