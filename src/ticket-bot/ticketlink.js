@@ -291,8 +291,11 @@ async function pollAndClickBookingButton(page, targetDate) {
     }, { venue: VENUE_NAME, date: targetDate });
 
     if (coords) {
-      // 실제 마우스 클릭 → isTrusted: true 이벤트 → NetFunnel 세션 정상 초기화
-      await page.mouse.click(coords.x, coords.y);
+      // waitForNavigation을 클릭과 동시에 시작 → 예매 페이지 로드 완료 후 리턴
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
+        page.mouse.click(coords.x, coords.y),
+      ]);
       log(`✅ 예매하기 클릭 성공 (${attempt + 1}번째 시도)`);
       return;
     }
