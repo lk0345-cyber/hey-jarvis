@@ -548,7 +548,17 @@ async function selectBestSubSection(page, ticketCount) {
 
   log(`   → "${best.name}" 선택 (${best.count}석 가용)`);
   await page.mouse.click(best.x, best.y);
-  await sleep(1500); // 지도 줌인 대기
+
+  // 지도 줌인 후 개별 좌석(소형 SVG 요소)이 나타날 때까지 대기
+  await page.waitForFunction(() => {
+    const smalls = Array.from(document.querySelectorAll('rect, circle, path')).filter(el => {
+      const r = el.getBoundingClientRect();
+      return r.width >= 3 && r.width <= 25 && r.height >= 3;
+    });
+    return smalls.length > 5;
+  }, null, { timeout: 8000 }).catch(() => {});
+  log('   좌석 상세 뷰 로드 완료');
+  await sleep(500);
 }
 
 // ─────────────────────────────────────────────
@@ -628,23 +638,30 @@ async function clickAvailableSeats(page, ticketCount) {
       // 2순위: SVG rect / circle / path
       for (const el of document.querySelectorAll('rect, circle, path')) {
         if (coords.length >= needed) break;
-        const fill = el.getAttribute('fill') || window.getComputedStyle(el).fill || '';
+        // fill 속성이 'none'이면 CSS computed 값 사용
+        const attrFill = el.getAttribute('fill');
+        const fill = (attrFill && attrFill !== 'none')
+          ? attrFill
+          : (window.getComputedStyle(el).fill || '');
         if (isUnavailableColor(fill)) continue;
         const cls = ((el.className?.baseVal || el.className) + '').toLowerCase();
         if (cls.includes('disabled') || cls.includes('sold') || cls.includes('bg') || cls.includes('background')) continue;
         const r = el.getBoundingClientRect();
-        if (r.width >= 4 && r.width <= 40 && r.height >= 4) {
+        if (r.width >= 3 && r.width <= 40 && r.height >= 3) {
           coords.push({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
         }
       }
       return coords;
     }, ticketCount - clicked);
 
+    if (seatCoords.length === 0 && attempt === 0) {
+      log(`   ⚠️  좌석 요소 미감지 → 재시도`);
+    }
     for (const { x, y } of seatCoords) {
+      log(`   🪑 좌석 클릭 ${clicked + 1}/${ticketCount} @ (${Math.round(x)}, ${Math.round(y)})`);
       await page.mouse.click(x, y);
-      await sleep(400);
+      await sleep(600);
       clicked++;
-      log(`   🪑 좌석 클릭 ${clicked}/${ticketCount}`);
     }
   }
 
