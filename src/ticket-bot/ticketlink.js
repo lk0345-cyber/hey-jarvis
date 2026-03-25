@@ -311,22 +311,33 @@ async function handleConfirmPopup(page, label = '', timeout = 10000) {
 
   while (Date.now() < deadline) {
     try {
-      const btn = page.locator(':text("확인")').last();
-      const box = await btn.boundingBox().catch(() => null);
-      if (box && box.width > 0 && box.height > 0) {
+      // 뷰포트 안에 있는 "확인" 요소만 탐색 (화면 밖 요소 제외)
+      const viewport = page.viewportSize() || { width: 1280, height: 900 };
+      const allBtns = page.locator(':text("확인")');
+      const count = await allBtns.count().catch(() => 0);
+      let btn = null;
+      let box = null;
+
+      // 마지막부터 역순으로 탐색 (가장 최근 팝업 버튼이 우선)
+      for (let i = count - 1; i >= 0; i--) {
+        const loc = allBtns.nth(i);
+        const b = await loc.boundingBox().catch(() => null);
+        if (b && b.width > 0 && b.height > 0 &&
+            b.y >= 0 && b.y + b.height <= viewport.height) {
+          btn = loc;
+          box = b;
+          break;
+        }
+      }
+
+      if (btn && box) {
         if (clickCount === 0) {
           const info = await btn.evaluate(el =>
             `${el.tagName}.${[...el.classList].join('.')}`
           ).catch(() => '?');
           log(`🔍 확인 버튼: ${info} @ (${Math.round(box.x)},${Math.round(box.y)})`);
-          // 예매안내 팝업은 첫 클릭 전 1초 대기 (NetFunnel 키 초기화)
-          if (label === '예매안내') {
-            log('⏳ NetFunnel 키 초기화 대기 (1초)...');
-            await sleep(1000);
-          }
         }
-        const freshBox = await btn.boundingBox().catch(() => null) || box;
-        await page.mouse.click(freshBox.x + freshBox.width / 2, freshBox.y + freshBox.height / 2);
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
         clickCount++;
         await sleep(500);
         const still = await btn.isVisible().catch(() => false);
