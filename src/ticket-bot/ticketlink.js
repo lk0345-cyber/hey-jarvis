@@ -410,37 +410,51 @@ async function handleConfirmPopup(page, label = '', timeout = 10000) {
 // ─────────────────────────────────────────────
 
 async function waitForCaptchaDone(page) {
-  const deadline = Date.now() + 120000; // 최대 2분 폴링
+  const deadline = Date.now() + 120000; // 최대 2분
+  let lastProgressLog = Date.now();
+  let captchaLogged = false;
+
+  log('🔍 보안문자/좌석화면 대기 중...');
 
   while (Date.now() < deadline) {
     try {
-      // ① 보안문자 입력완료 버튼이 있으면 사용자가 풀 때까지 대기
+      // 5초마다 현재 URL 진행상황 로그
+      if (Date.now() - lastProgressLog > 5000) {
+        const url = page.url();
+        log(`   → 현재 URL: ${url.split('/').slice(-2).join('/')}`);
+        lastProgressLog = Date.now();
+      }
+
+      // ① 보안문자 입력완료 버튼 감지
       const captchaCount = await page.locator('button:has-text("입력완료")').count().catch(() => 0);
       if (captchaCount > 0) {
-        log('🔒 보안문자 감지 → 직접 입력 후 [입력완료] 클릭해주세요.');
-        for (let i = 0; i < 600; i++) {
-          await sleep(300);
-          const still = await page.locator('button:has-text("입력완료")').count().catch(() => 0);
-          if (still === 0) break;
+        if (!captchaLogged) {
+          log('🔒 보안문자 감지 → 직접 입력 후 [입력완료] 클릭해주세요.');
+          captchaLogged = true;
         }
+        await sleep(300);
+        continue;
+      }
+      if (captchaLogged) {
         log('✅ 보안문자 통과');
         await sleep(800);
         return;
       }
 
-      // ② 좌석선택 화면 도달 여부 (텍스트·클래스·SVG·canvas 중 하나라도 있으면 OK)
-      const onSeatPage = await page.evaluate(() => {
-        const txt = document.body?.innerText || '';
-        if (txt.includes('내야지정석') || txt.includes('잔디석') || txt.includes('응원단석')) return true;
-        if (document.querySelector('svg, canvas')) return true;
-        if (document.querySelector('[class*="grade"],[class*="Grade"],[class*="seat_grade"]')) return true;
-        if (document.querySelector('iframe')) return true;
-        return false;
-      }).catch(() => false);
-
-      if (onSeatPage) {
-        log('✅ 좌석선택 화면 진입 확인');
-        return;
+      // ② 좌석선택 화면 도달 여부 (/reserve/ URL + 좌석 관련 요소)
+      const url = page.url();
+      if (url.includes('/reserve/')) {
+        const onSeatPage = await page.evaluate(() => {
+          const txt = document.body?.innerText || '';
+          if (txt.includes('내야지정석') || txt.includes('잔디석') || txt.includes('응원단석')) return true;
+          if (document.querySelector('svg, canvas')) return true;
+          if (document.querySelector('[class*="grade"],[class*="Grade"],[class*="seat_grade"],[class*="seatGrade"]')) return true;
+          return false;
+        }).catch(() => false);
+        if (onSeatPage) {
+          log('✅ 좌석선택 화면 진입 확인');
+          return;
+        }
       }
     } catch { /* 무시 */ }
 
@@ -630,11 +644,10 @@ async function selectSeat(page, config) {
   await page.waitForFunction(() => {
     const txt = document.body?.innerText || '';
     if (txt.includes('내야지정석') || txt.includes('잔디석') || txt.includes('응원단석')) return true;
-    if (document.querySelector('[class*="grade"],[class*="Grade"],[class*="seat_grade"]')) return true;
+    if (document.querySelector('[class*="grade"],[class*="Grade"],[class*="seat_grade"],[class*="seatGrade"]')) return true;
     if (document.querySelector('svg, canvas')) return true;
-    if (document.querySelector('iframe')) return true;
     return false;
-  }, {}, { timeout: 40000 }).catch(() => log('⚠️  좌석화면 로드 대기 timeout → 그대로 진행'));
+  }, null, { timeout: 40000 }).catch(() => log('⚠️  좌석화면 로드 대기 timeout → 그대로 진행'));
   log('🗺️  좌석 선택 화면 로드 완료');
   await sleep(1000);
 
@@ -708,9 +721,12 @@ async function runTicketBot(config) {
     await login(page, config);
     await enterReservePage(page, config); // 예매안내 팝업 처리 포함
     // 예매 페이지 이동 완료 대기
-    await page.waitForURL('**/reserve/**', { timeout: 20000 }).catch(() => {});
+    log('🔄 예매 페이지 이동 대기 중...');
+    await page.waitForURL('**/reserve/**', { timeout: 20000 })
+      .then(() => log('✅ 예매 페이지 이동 완료'))
+      .catch(() => log('⚠️  예매 페이지 URL 감지 실패 → 계속 진행'));
     // 대기열 처리 (정시 오픈 때 최대 10분)
-    await handleQueueIfAppears(page, 30000);
+    await handleQueueIfAppears(page, 5000);
     await waitForCaptchaDone(page);
     await selectSeat(page, config);
   } catch (err) {
