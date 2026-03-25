@@ -343,7 +343,7 @@ async function waitForCaptchaDone(page) {
     page.waitForSelector('button:has-text("입력완료")', { timeout: 15000 })
       .then(() => 'captcha').catch(() => null),
     page.waitForSelector(
-      '[class*="grade-list"], [class*="gradeList"], li:has-text("내야"), li:has-text("잔디"), li:has-text("응원"), .reserve-seat',
+      'li:has-text("내야지정석"), li:has-text("잔디석"), li:has-text("응원단석")',
       { timeout: 15000 }
     ).then(() => 'seat').catch(() => null),
   ]);
@@ -539,12 +539,13 @@ async function clickAvailableSeats(page, ticketCount) {
 async function selectSeat(page, config) {
   const { targetGrade, ticketCount } = config;
 
+  // 등급 목록이 실제로 렌더링될 때까지 대기 (최대 40초)
   await page.waitForSelector(
-    'svg, canvas, [class*="seat-map"], [class*="grade"], [class*="등급"]',
-    { timeout: 15000 }
+    'li:has-text("내야지정석"), li:has-text("잔디석"), li:has-text("응원단석"), svg, canvas',
+    { timeout: 40000 }
   );
   log('🗺️  좌석 선택 화면 로드 완료');
-  await sleep(800);
+  await sleep(1000);
 
   await clickTargetGradeInPanel(page, targetGrade);
   await selectBestSubSection(page, ticketCount);
