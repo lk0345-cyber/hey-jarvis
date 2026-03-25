@@ -552,18 +552,31 @@ async function selectBestSubSection(page, ticketCount) {
 
   // 지도 새로고침 버튼 2회 클릭 (좌석 색상 강제 렌더링)
   const refreshed = await page.evaluate(() => {
-    // 지도 영역 내 버튼 중 마지막 것(새로고침)을 찾기
-    // 또는 SVG path가 하나뿐인 작은 버튼
-    const mapArea = document.querySelector('[class*="map"], [class*="seat_map"], [class*="seatMap"], svg')?.closest('div') || document.body;
-    const btns = Array.from(mapArea.querySelectorAll('button')).filter(b => {
+    // 1순위: class/title에 reset·refresh·rotate 포함 버튼
+    const byClass = document.querySelector(
+      'button[class*="reset"], button[class*="refresh"], button[class*="reload"], button[class*="rotate"], ' +
+      'button[title*="새로고침"], button[aria-label*="새로고침"], button[aria-label*="reset"]'
+    );
+    if (byClass) {
+      const r = byClass.getBoundingClientRect();
+      if (r.width > 0) return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }
+
+    // 2순위: 텍스트 없는 작은 아이콘 버튼 중 화면 왼쪽(지도 영역) 마지막 버튼
+    const iconBtns = Array.from(document.querySelectorAll('button')).filter(b => {
+      const txt = (b.innerText || '').trim();
+      if (txt.length > 2) return false; // 텍스트 버튼 제외
       const r = b.getBoundingClientRect();
-      return r.width > 0 && r.width < 80 && r.height > 0 && r.height < 80;
+      return r.width >= 20 && r.width <= 80 && r.height >= 20 && r.height <= 80
+             && r.top > 150 && r.left < window.innerWidth * 0.78;
     });
-    if (btns.length === 0) return false;
-    // 새로고침 버튼은 보통 마지막 컨트롤 버튼
-    const refreshBtn = btns[btns.length - 1];
-    const r = refreshBtn.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+
+    if (iconBtns.length > 0) {
+      const btn = iconBtns[iconBtns.length - 1]; // 마지막 = 새로고침
+      const r = btn.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }
+    return false;
   });
 
   if (refreshed) {
