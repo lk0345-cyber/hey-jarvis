@@ -253,8 +253,7 @@ async function enterReservePage(page, config) {
     await pollAndClickBookingButton(page, targetGameDate);
   }
 
-  // 대기열 처리
-  await handleQueueIfAppears(page);
+  // 대기열 처리 (runTicketBot에서 팝업과 병렬 실행)
 }
 
 // ─────────────────────────────────────────────
@@ -329,20 +328,21 @@ async function handleConfirmPopup(page, label = '', timeout = 8000) {
 // ─────────────────────────────────────────────
 
 async function waitForCaptchaDone(page) {
+  // 입력완료 버튼이 존재하는지 먼저 확인
+  const hasCaptcha = await page.locator('button:has-text("입력완료")').count().catch(() => 0);
+  if (hasCaptcha === 0) return; // 보안문자 단계 없음 → 바로 통과
+
   log('🔒 보안문자 입력 대기 중...');
   log('   → 화면의 보안문자를 직접 입력하고 [입력완료] 버튼을 눌러주세요.');
 
-  await page
-    .waitForSelector('[class*="captcha"], [class*="clean"], button:has-text("입력완료")', {
-      state: 'hidden',
-      timeout: 120000,
-    })
-    .catch(async () => {
-      await page.waitForSelector('svg, canvas, [class*="seat-map"]', { timeout: 120000 });
-    });
+  // waitForFunction 으로 폴링 → SPA 전환/프레임 이탈에도 안정적으로 감지
+  await page.waitForFunction(
+    () => !Array.from(document.querySelectorAll('button')).some((b) => b.textContent?.trim() === '입력완료'),
+    { timeout: 120000, polling: 300 },
+  );
 
   log('✅ 보안문자 통과');
-  await sleep(1000);
+  await sleep(800);
 }
 
 // ─────────────────────────────────────────────
@@ -594,7 +594,13 @@ async function runTicketBot(config) {
   try {
     await login(page, config);
     await enterReservePage(page, config);
-    await handleConfirmPopup(page, '예매안내');
+    // 대기열 처리와 팝업 확인을 병렬 실행 → 팝업이 뜨는 즉시 클릭
+    await Promise.all([
+      handleQueueIfAppears(page),
+      handleConfirmPopup(page, '예매안내'),
+    ]);
+    // 대기열이 있었던 경우 대기열 해소 후 팝업이 다시 뜰 수 있으므로 재시도
+    await handleConfirmPopup(page, '예매안내(재)', 3000).catch(() => {});
     await waitForCaptchaDone(page);
     await selectSeat(page, config);
   } catch (err) {
