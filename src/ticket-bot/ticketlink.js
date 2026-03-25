@@ -310,7 +310,7 @@ async function pollAndClickBookingButton(page, targetDate) {
 async function handleConfirmPopup(page, label = '', timeout = 8000) {
   try {
     await page.waitForSelector('.modal, [role="dialog"], .popup, [class*="modal"]', { timeout });
-    const confirmBtn = page.locator('button:has-text("확인")');
+    const confirmBtn = page.locator('button:has-text("완료"), button:has-text("확인")');
     const count = await confirmBtn.count();
     if (count > 0) {
       log(`📋 팝업 처리${label ? ` [${label}]` : ''}...`);
