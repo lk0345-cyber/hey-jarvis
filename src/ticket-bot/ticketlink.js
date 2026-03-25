@@ -311,37 +311,54 @@ async function handleConfirmPopup(page, label = '', timeout = 10000) {
 
   while (Date.now() < deadline) {
     try {
-      // 뷰포트 안에 있는 "확인" 요소만 탐색 (화면 밖 요소 제외)
-      const viewport = page.viewportSize() || { width: 1280, height: 900 };
-      const allBtns = page.locator(':text("확인")');
-      const count = await allBtns.count().catch(() => 0);
-      let btn = null;
-      let box = null;
-
-      // 마지막부터 역순으로 탐색 (가장 최근 팝업 버튼이 우선)
-      for (let i = count - 1; i >= 0; i--) {
-        const loc = allBtns.nth(i);
-        const b = await loc.boundingBox().catch(() => null);
-        if (b && b.width > 0 && b.height > 0 &&
-            b.y >= 0 && b.y + b.height <= viewport.height) {
-          btn = loc;
-          box = b;
-          break;
+      // 페이지 내부에서 직접 "확인" 버튼 탐색:
+      // 뷰포트 안에 있고 z-index가 가장 높은 요소 (= 최상단 모달의 버튼)
+      const btnInfo = await page.evaluate(() => {
+        let best = null;
+        let bestZ = -1;
+        const allEls = document.querySelectorAll('button, a, span, div, p, li');
+        for (const el of allEls) {
+          if (el.textContent?.trim() !== '확인') continue;
+          if (!el.offsetParent) continue;
+          const rect = el.getBoundingClientRect();
+          if (rect.width < 2 || rect.height < 2) continue;
+          if (rect.y < 0 || rect.y + rect.height > window.innerHeight) continue;
+          // 조상까지 포함해 최대 z-index 계산
+          let maxZ = 0;
+          let p = el;
+          while (p) {
+            const z = parseInt(getComputedStyle(p).zIndex);
+            if (!isNaN(z) && z > maxZ) maxZ = z;
+            p = p.parentElement;
+          }
+          if (best === null || maxZ > bestZ) {
+            bestZ = maxZ;
+            best = {
+              x: rect.left + rect.width / 2,
+              y: rect.top + rect.height / 2,
+              z: maxZ,
+              tag: el.tagName,
+              cls: el.className,
+            };
+          }
         }
-      }
+        return best;
+      }).catch(() => null);
 
-      if (btn && box) {
+      if (btnInfo) {
         if (clickCount === 0) {
-          const info = await btn.evaluate(el =>
-            `${el.tagName}.${[...el.classList].join('.')}`
-          ).catch(() => '?');
-          log(`🔍 확인 버튼: ${info} @ (${Math.round(box.x)},${Math.round(box.y)})`);
+          log(`🔍 확인 버튼: ${btnInfo.tag}.${btnInfo.cls} z=${btnInfo.z} @ (${Math.round(btnInfo.x)},${Math.round(btnInfo.y)})`);
         }
-        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.click(btnInfo.x, btnInfo.y);
         clickCount++;
         await sleep(500);
-        const still = await btn.isVisible().catch(() => false);
-        if (!still) {
+        // 팝업이 사라졌는지 확인 (페이지 이동 포함)
+        const stillExists = await page.evaluate(() =>
+          !!document.querySelector('button, a, span, div')
+            && [...document.querySelectorAll('button, a, span, div, p')]
+              .some(el => el.textContent?.trim() === '확인' && el.offsetParent)
+        ).catch(() => false);
+        if (!stillExists) {
           log(`✅ 팝업 확인 클릭 완료${label ? ` [${label}]` : ''}`);
           return;
         }
