@@ -2,6 +2,7 @@
 
 const { chromium } = require('patchright');
 const fs = require('fs');
+const { PNG } = require('pngjs');
 
 // 환경에 따라 Chrome 경로 자동 감지
 function getChromePath() {
@@ -630,89 +631,111 @@ async function handleSeatTypePopup(page, targetGrade) {
 // 사용 가능한 좌석 N장 클릭
 // ─────────────────────────────────────────────
 
+// ─────────────────────────────────────────────
+// 스크린샷 기반 색상 좌석 좌표 탐색
+// (pyautogui screenshot 방식과 동일 원리)
+// ─────────────────────────────────────────────
+
+async function findSeatsByScreenshot(page, needed) {
+  // 스크린샷 (PNG Buffer)
+  const buf = await page.screenshot({ type: 'png' });
+  const png = PNG.sync.read(buf);
+  const { width: W, height: H, data: d } = png;
+
+  // viewport 기준 좌표 = 픽셀 좌표 / devicePixelRatio
+  const dpr = await page.evaluate(() => window.devicePixelRatio || 1);
+
+  // 좌석 맵 탐색 영역: 화면 전체에서 UI 패널 제외
+  // - x: 0 ~ 화면 오른쪽 30% 까지 (오른쪽은 등급 패널)
+  // - y: 화면 위 20% 이후 (헤더/그레이드 패널 제외)
+  const xMax = Math.floor(W * 0.72);
+  const yMin = Math.floor(H * 0.20);
+  const yMax = Math.floor(H * 0.92);
+
+  // 색상 좌석 픽셀 탐색: 회색/흰색/검정 이 아닌 채도 높은 픽셀
+  // 채도(saturation) = max(R,G,B) - min(R,G,B)
+  const colored = [];
+  const STEP = 2; // 2픽셀마다 샘플링 (속도/정확도 균형)
+
+  for (let py = yMin; py < yMax; py += STEP) {
+    for (let px = 0; px < xMax; px += STEP) {
+      const i = (py * W + px) * 4;
+      const r = d[i], g = d[i+1], b = d[i+2], a = d[i+3];
+      if (a < 200) continue;                                   // 투명 제외
+      if (r > 210 && g > 210 && b > 210) continue;            // 흰색/밝은 배경 제외
+      if (r < 25 && g < 25 && b < 25) continue;               // 검정 제외
+      const sat = Math.max(r,g,b) - Math.min(r,g,b);
+      if (sat < 35) continue;                                  // 회색(무채색) 제외
+      // 채도 있는 픽셀 = 선택 가능한 좌석 후보
+      colored.push({ px, py });
+    }
+  }
+
+  if (colored.length === 0) {
+    log(`   ⚠️  스크린샷 색상 픽셀 0개 (W=${W} H=${H} dpr=${dpr})`);
+    return [];
+  }
+
+  // 클러스터링: 가까운 픽셀 그룹 → 각 그룹 중심 = 좌석 1개
+  // 픽셀 좌표 기준 gap: 약 8px (viewport 기준 4px * dpr)
+  const GAP = Math.round(10 * dpr);
+  const clusters = [];
+
+  for (const { px, py } of colored) {
+    const existing = clusters.find(c => Math.abs(c.cx - px) < GAP && Math.abs(c.cy - py) < GAP);
+    if (existing) {
+      existing.sumX += px; existing.sumY += py; existing.n++;
+      existing.cx = existing.sumX / existing.n;
+      existing.cy = existing.sumY / existing.n;
+    } else {
+      clusters.push({ cx: px, cy: py, sumX: px, sumY: py, n: 1 });
+    }
+    if (clusters.length > needed * 20) break; // 충분하면 중단
+  }
+
+  if (clusters.length === 0) return [];
+
+  // viewport 좌표로 변환 (dpr 나누기)
+  const seats = clusters
+    .sort((a, b) => a.cx - b.cx || a.cy - b.cy) // 왼쪽→오른쪽, 위→아래 순
+    .slice(0, needed * 3)
+    .map(c => ({ x: c.cx / dpr, y: c.cy / dpr }));
+
+  log(`   📸 스크린샷 색상픽셀=${colored.length} 클러스터=${clusters.length} → ${seats.length}개 후보`);
+  return seats;
+}
+
 async function clickAvailableSeats(page, ticketCount) {
   log(`🪑 사용 가능한 좌석 ${ticketCount}장 선택 중...`);
 
   let clicked = 0;
 
   for (let attempt = 0; attempt < 5 && clicked < ticketCount; attempt++) {
-    if (attempt > 0) await sleep(800);
+    if (attempt > 0) await sleep(1000);
 
-    // Canvas 픽셀 분석으로 색상 좌석 좌표 추출
-    const seatCoords = await page.evaluate((needed) => {
-      // ── Canvas 픽셀 기반 탐색 ──
-      const canvases = [...document.querySelectorAll('canvas')]
-        .filter(c => { const r = c.getBoundingClientRect(); return r.width > 100 && r.height > 100; });
+    const seats = await findSeatsByScreenshot(page, ticketCount - clicked);
 
-      for (const canvas of canvases) {
-        const ctx = canvas.getContext('2d');
-        if (!ctx) continue;
-        const rect = canvas.getBoundingClientRect();
-        let imgData;
-        try { imgData = ctx.getImageData(0, 0, canvas.width, canvas.height); }
-        catch { continue; } // tainted canvas
-
-        const d = imgData.data;
-        const W = canvas.width;
-        const H = canvas.height;
-        const sx = rect.width / W;   // canvas→page 스케일
-        const sy = rect.height / H;
-
-        // 색상 픽셀(선택가능 좌석) 탐색: 적색이 강하고 녹/청이 낮은 마룬/브라운 계열
-        const colored = [];
-        for (let y = 4; y < H - 4; y += 3) {
-          for (let x = 4; x < W - 4; x += 3) {
-            const i = (y * W + x) * 4;
-            const r = d[i], g = d[i+1], b = d[i+2], a = d[i+3];
-            if (a < 180) continue;
-            // 회색/흰색 제외
-            if (r > 190 && g > 190 && b > 190) continue;
-            if (Math.abs(r-g) < 18 && Math.abs(g-b) < 18 && Math.abs(r-b) < 18) continue;
-            // 갈색/배경 추가 제외: g와 b가 비슷하고 r이 중간값
-            if (r < 180 && g < 120 && b < 120 && r > g && r > b) {
-              // 적색 계열 → 좌석 후보
-              const px = rect.left + x * sx;
-              const py = rect.top + y * sy;
-              colored.push({ x: px, y: py });
-            }
-          }
-        }
-
-        // 클러스터링: 가까운 픽셀들을 하나의 좌석으로
-        const seats = [];
-        const gap = 12;
-        for (const p of colored) {
-          if (!seats.some(s => Math.abs(s.x - p.x) < gap && Math.abs(s.y - p.y) < gap))
-            seats.push(p);
-          if (seats.length >= needed * 3) break; // 충분하면 중단
-        }
-        if (seats.length > 0) return seats.slice(0, needed).map(s => ({ ...s, label: 'canvas' }));
-      }
-
-      // ── 폴백: DOM 기반 탐색 ──
-      const coords = [];
-      for (const titleEl of document.querySelectorAll('title')) {
-        const txt = titleEl.textContent || '';
-        if (!txt.includes('열')) continue;
-        const seat = titleEl.parentElement;
-        if (!seat) continue;
-        const r = seat.getBoundingClientRect();
-        if (r.width >= 2 && r.width <= 60)
-          coords.push({ x: r.left + r.width/2, y: r.top + r.height/2, label: txt.trim() });
-      }
-      return coords.slice(0, needed);
-    }, ticketCount - clicked);
-
-    if (seatCoords.length === 0) {
+    if (seats.length === 0) {
       log(`   ⚠️  좌석 미감지 (${attempt + 1}번째) → 재시도`);
       continue;
     }
 
-    for (const { x, y, label } of seatCoords.slice(0, ticketCount - clicked)) {
-      log(`   🪑 좌석 클릭 ${clicked + 1}/${ticketCount} @ (${Math.round(x)}, ${Math.round(y)})${label ? ' [' + label + ']' : ''}`);
+    for (const { x, y } of seats.slice(0, ticketCount - clicked)) {
+      log(`   🪑 좌석 클릭 ${clicked + 1}/${ticketCount} @ (${Math.round(x)}, ${Math.round(y)})`);
       await page.mouse.click(x, y);
-      await sleep(600);
+      await sleep(700);
       clicked++;
+
+      // 클릭 후 좌석 선택 확인: 선택된 좌석 수가 증가했는지
+      const sel = await page.evaluate(() => {
+        const txt = document.body?.innerText || '';
+        const m = txt.match(/선택\s*(\d+)\s*석/) || txt.match(/(\d+)\s*석\s*선택/);
+        return m ? parseInt(m[1]) : -1;
+      }).catch(() => -1);
+      if (sel > 0) {
+        log(`   ✅ 좌석 선택 확인: ${sel}석 선택됨`);
+        break; // 좌석 선택 성공 → 다음 루프
+      }
     }
   }
 
@@ -750,23 +773,30 @@ async function selectSeat(page, config) {
   await handleSeatTypePopup(page, targetGrade);
   await clickAvailableSeats(page, ticketCount);
 
-  // 좌석 선택 여부 확인 (선택된 좌석이 없으면 중단)
+  // 좌석 선택 여부 확인
   const selectedCount = await page.evaluate(() => {
     const txt = document.body?.innerText || '';
     const m = txt.match(/선택\s*(\d+)\s*석/) || txt.match(/(\d+)\s*석\s*선택/);
     if (m) return parseInt(m[1]);
-    // 선택된 좌석 스타일 감지
     return document.querySelectorAll('[class*="selected"], [class*="Selected"], [class*="active-seat"]').length;
   }).catch(() => 0);
 
   if (selectedCount === 0) {
-    log('⚠️  좌석이 선택되지 않았습니다. 직접 좌석을 클릭한 후 다음단계를 눌러주세요.');
-    return;
+    log('⚠️  좌석 선택 미확인 → 다음단계 버튼 시도 (좌석 선택 됐을 수 있음)');
+  } else {
+    log(`✅ 좌석 ${selectedCount}석 선택 확인`);
   }
 
-  log('➡️  다음단계 클릭...');
-  await page.locator('button:has-text("다음단계"), a:has-text("다음단계")').first().click();
-  log('🎉 좌석 선택 완료! 이후 단계(권종/배송/결제)를 진행해주세요.');
+  // 다음단계 버튼 클릭 시도
+  const nextBtn = page.locator('button:has-text("다음단계"), a:has-text("다음단계")').first();
+  const nextVisible = await nextBtn.isVisible().catch(() => false);
+  if (nextVisible) {
+    log('➡️  다음단계 클릭...');
+    await nextBtn.click();
+    log('🎉 좌석 선택 완료! 이후 단계(권종/배송/결제)를 진행해주세요.');
+  } else {
+    log('⚠️  다음단계 버튼 미노출. 직접 좌석 클릭 후 진행해주세요.');
+  }
 }
 
 // ─────────────────────────────────────────────
