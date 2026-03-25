@@ -264,6 +264,15 @@ async function pollAndClickBookingButton(page, targetDate) {
   log('⚡ 예매하기 버튼 폴링 시작 (100ms 간격)...');
 
   for (let attempt = 0; attempt < 300; attempt++) {
+    // 팝업이 이미 나타났으면 즉시 중단 (이전 클릭이 성공한 것)
+    const popupVisible = await page.evaluate(() =>
+      !!document.querySelector('.common_modal[role="dialog"]')
+    ).catch(() => false);
+    if (popupVisible) {
+      log(`✅ 예매하기 성공 → 팝업 감지 (총 ${attempt}번 시도)`);
+      break;
+    }
+
     if (attempt > 0 && attempt % 10 === 0) {
       await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
     }
@@ -285,19 +294,18 @@ async function pollAndClickBookingButton(page, targetDate) {
       const text = await btn.textContent().catch(() => '');
       if (text.includes('오픈') || text.includes('예정')) { await sleep(100); continue; }
 
-      // 팝업 핸들러를 먼저 시작하고 클릭 → 팝업이 뜨자마자 잡기
       await btn.scrollIntoViewIfNeeded();
-      const popupPromise = handleConfirmPopup(page, '예매안내', 8000);
-      await btn.click();
-      log(`✅ 예매하기 클릭 성공 (${attempt + 1}번째 시도)`);
-      await popupPromise;
-      return;
+      // 팝업 오버레이로 인한 throw 무시 (클릭 자체는 성공할 수 있음)
+      await btn.click().catch(() => {});
+      // 팝업 렌더링 대기 → 다음 iteration에서 팝업 감지
+      await sleep(200);
     } catch {
       await sleep(100);
     }
   }
 
-  throw new Error('30초 내 예매하기 버튼 활성화 실패');
+  // 팝업 처리 (루프 종료 후 단 1회 호출)
+  await handleConfirmPopup(page, '예매안내', 10000);
 }
 
 // ─────────────────────────────────────────────
@@ -311,16 +319,7 @@ async function handleConfirmPopup(page, label = '', timeout = 10000) {
 
   while (Date.now() < deadline) {
     try {
-      // 팝업 HTML 구조 1회 덤프 (디버깅용)
-      if (clickCount === 0) {
-        const modalHtml = await page.evaluate(() => {
-          const m = document.querySelector('.common_modal_footer, [class*="layer_pop"] [class*="footer"], [class*="modal"] [class*="footer"]');
-          return m?.parentElement?.outerHTML?.substring(0, 3000) ?? null;
-        }).catch(() => null);
-        if (modalHtml) log(`📄 팝업 구조:\n${modalHtml}`);
-      }
-
-      // common_modal_close(닫기 전용) 제외하고 확인 버튼 탐색
+      // button/a 우선 탐색 → span/div 폴백
       const btnInfo = await page.evaluate(() => {
         function getMaxZ(el) {
           let maxZ = 0;
@@ -332,15 +331,8 @@ async function handleConfirmPopup(page, label = '', timeout = 10000) {
           }
           return maxZ;
         }
-        // 1순위: footer 안의 button/a (close 제외)
-        // 2순위: 뷰포트 내 확인 텍스트 button/a (close 제외)
-        // 3순위: span/div (close 제외)
-        const selGroups = [
-          '.common_modal_footer button:not(.common_modal_close), .common_modal_footer a:not(.common_modal_close)',
-          'button:not(.common_modal_close), a:not(.common_modal_close)',
-          'span:not(.common_modal_close), div:not(.common_modal_close)',
-        ];
-        for (const sel of selGroups) {
+        // 1순위: footer 버튼  2순위: button/a  3순위: span/div
+        for (const sel of ['.common_modal_footer button, .common_modal_footer a', 'button, a', 'span, div, p, li']) {
           let best = null;
           let bestZ = -1;
           for (const el of document.querySelectorAll(sel)) {
