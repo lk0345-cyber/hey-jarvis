@@ -421,40 +421,49 @@ async function waitForCaptchaDone(page) {
       // 5초마다 현재 URL 진행상황 로그
       if (Date.now() - lastProgressLog > 5000) {
         const url = page.url();
-        log(`   → 현재 URL: ${url.split('/').slice(-2).join('/')}`);
+        log(`   → 현재 URL: ${url.split('?')[0].split('/').slice(-2).join('/')}`);
         lastProgressLog = Date.now();
       }
 
-      // ① 보안문자 입력완료 버튼 감지
-      const captchaCount = await page.locator('button:has-text("입력완료")').count().catch(() => 0);
-      if (captchaCount > 0) {
-        if (!captchaLogged) {
-          log('🔒 보안문자 감지 → 직접 입력 후 [입력완료] 클릭해주세요.');
-          captchaLogged = true;
+      // ① 좌석선택 화면 먼저 체크 (보안문자보다 우선순위)
+      const onSeatPage = await page.evaluate(() => {
+        const txt = document.body?.innerText || '';
+        if (txt.includes('내야지정석') || txt.includes('잔디석') || txt.includes('응원단석')) return true;
+        if (document.querySelector('[class*="grade"],[class*="Grade"],[class*="seat_grade"],[class*="seatGrade"]')) return true;
+        // 큰 SVG = 좌석 지도
+        const svgs = document.querySelectorAll('svg');
+        for (const svg of svgs) {
+          const r = svg.getBoundingClientRect();
+          if (r.width > 100 && r.height > 100) return true;
         }
-        await sleep(300);
-        continue;
-      }
-      if (captchaLogged) {
-        log('✅ 보안문자 통과');
-        await sleep(800);
+        return false;
+      }).catch(() => false);
+
+      if (onSeatPage) {
+        log('✅ 좌석선택 화면 진입 확인');
         return;
       }
 
-      // ② 좌석선택 화면 도달 여부 (/reserve/ URL + 좌석 관련 요소)
-      const url = page.url();
-      if (url.includes('/reserve/')) {
-        const onSeatPage = await page.evaluate(() => {
-          const txt = document.body?.innerText || '';
-          if (txt.includes('내야지정석') || txt.includes('잔디석') || txt.includes('응원단석')) return true;
-          if (document.querySelector('svg, canvas')) return true;
-          if (document.querySelector('[class*="grade"],[class*="Grade"],[class*="seat_grade"],[class*="seatGrade"]')) return true;
-          return false;
-        }).catch(() => false);
-        if (onSeatPage) {
-          log('✅ 좌석선택 화면 진입 확인');
-          return;
+      // ② 보안문자 감지 (캡차 이미지/입력란 기반)
+      const hasCaptcha = await page.evaluate(() => {
+        const txt = document.body?.innerText || '';
+        if (txt.includes('보안문자')) return true;
+        return !!(
+          document.querySelector('img[src*="captcha"]') ||
+          document.querySelector('[class*="captcha"], [id*="captcha"]') ||
+          document.querySelector('input[placeholder*="보안문자"], input[placeholder*="문자"]')
+        );
+      }).catch(() => false);
+
+      if (hasCaptcha) {
+        if (!captchaLogged) {
+          log('🔒 보안문자 감지 → 직접 입력 후 확인 버튼 클릭해주세요.');
+          captchaLogged = true;
         }
+      } else if (captchaLogged) {
+        log('✅ 보안문자 통과');
+        await sleep(800);
+        return;
       }
     } catch { /* 무시 */ }
 
