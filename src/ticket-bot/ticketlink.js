@@ -305,20 +305,27 @@ async function pollAndClickBookingButton(page, targetDate) {
 async function handleConfirmPopup(page, label = '', timeout = 10000) {
   log(`📋 팝업 처리 대기${label ? ` [${label}]` : ''}...`);
   const deadline = Date.now() + timeout;
+  let clickCount = 0;
 
   while (Date.now() < deadline) {
     try {
-      // 메인 프레임에서 확인 버튼 탐색 (팝업은 스포츠 페이지 위 오버레이)
-      const btn = page.locator('button:has-text("확인"), a:has-text("확인")').last();
+      // :text-is 로 button/a/span/div 모두 탐색 (마지막 = 가장 최근 팝업 버튼)
+      const btn = page.locator(':text-is("확인")').last();
       const box = await btn.boundingBox().catch(() => null);
       if (box && box.width > 0 && box.height > 0) {
         // isTrusted:true 실제 마우스 클릭
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        clickCount++;
         await sleep(300);
-        // 팝업이 사라졌는지 확인
+        // 팝업이 사라졌으면 성공
         const still = await btn.isVisible().catch(() => false);
         if (!still) {
           log(`✅ 팝업 확인 클릭 완료${label ? ` [${label}]` : ''}`);
+          return;
+        }
+        // 3회 이상 클릭해도 사라지지 않으면 강제 진행 (상시 노출 버튼과 혼동)
+        if (clickCount >= 3) {
+          log(`✅ 팝업 확인 클릭 완료 (강제)${label ? ` [${label}]` : ''}`);
           return;
         }
       }
