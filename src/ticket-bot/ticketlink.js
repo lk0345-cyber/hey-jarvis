@@ -481,7 +481,7 @@ async function waitForCaptchaDone(page) {
 // 등급 패널에서 목표 등급 클릭
 // ─────────────────────────────────────────────
 
-// 등급 클릭 — true: 클릭 성공, false: 목록에 없거나 0석
+// 등급 클릭 — 'ok': 성공 / 'zero_seats': 0석 / 'not_found': 목록에 없음
 async function clickTargetGradeInPanel(page, targetGrade) {
   log(`🎫 등급 선택: "${targetGrade}"`);
 
@@ -499,18 +499,18 @@ async function clickTargetGradeInPanel(page, targetGrade) {
     const seatMatch = text.match(/(\d+)\s*석/);
     const seatCount = seatMatch ? parseInt(seatMatch[1]) : -1;
     if (seatCount === 0) {
-      log(`⚠️  "${targetGrade}" 잔여석 0 → 다음 순위로 건너뜀`);
-      return false;
+      log(`   ❌ "${targetGrade}" 잔여석 0석 (매진)`);
+      return 'zero_seats';
     }
 
     await item.click();
-    log(`✅ "${targetGrade}" 클릭 (잔여: ${seatCount >= 0 ? seatCount + '석' : '?'})`);
+    log(`   ✅ "${targetGrade}" 클릭 (잔여: ${seatCount >= 0 ? seatCount + '석' : '확인불가'})`);
     await sleep(600);
-    return true;
+    return 'ok';
   }
 
-  log(`⚠️  등급 "${targetGrade}"을 목록에서 찾을 수 없음 → 다음 순위로`);
-  return false;
+  log(`   ❌ "${targetGrade}" 등급이 패널 목록에 없음`);
+  return 'not_found';
 }
 
 // ─────────────────────────────────────────────
@@ -840,8 +840,8 @@ async function clickAvailableSeats(page, ticketCount) {
 
   const candidates = await findSeatsByScreenshot(page, ticketCount * 3);
   if (candidates.length === 0) {
-    log('   ⚠️  좌석 후보 없음. 직접 선택해주세요.');
-    return false;
+    log('   ❌ 좌석 후보 없음 (스크린샷에서 선택 가능한 좌석 색상 미감지)');
+    return 'no_candidates';
   }
   log(`   후보: ${candidates.slice(0, 8).map(s => `(${s.x},${s.y})n=${s.n}`).join(' ')}`);
 
@@ -880,23 +880,31 @@ async function clickAvailableSeats(page, ticketCount) {
   }
 
   await page.screenshot({ path: `${home}/Desktop/seat-after.png` }).catch(() => {});
-  log('⚠️  자동 진행 실패. 직접 좌석 클릭 후 다음단계를 눌러주세요.');
-  return false;
+  log('   ❌ 좌석 클릭했으나 다음단계 이동 실패 (다음단계 버튼 응답 없음)');
+  return 'next_step_failed';
 }
 
 // ─────────────────────────────────────────────
 // 전체 좌석 선택 플로우
 // ─────────────────────────────────────────────
 
-// 단일 등급 시도 — true: 성공, false: 좌석 없음(다음 순위 시도 가능)
+// 단일 등급 시도 — 'success' | 'zero_seats' | 'not_found' | 'no_candidates' | 'next_step_failed'
 async function trySelectGrade(page, grade, count) {
-  const found = await clickTargetGradeInPanel(page, grade);
-  if (!found) return false;
+  const gradeResult = await clickTargetGradeInPanel(page, grade);
+  if (gradeResult !== 'ok') return gradeResult;
 
   await selectBestSubSection(page, count);
   await handleSeatTypePopup(page, grade);
-  return await clickAvailableSeats(page, count);
+  const seatResult = await clickAvailableSeats(page, count);
+  return seatResult === true ? 'success' : seatResult;
 }
+
+const FAIL_REASON = {
+  zero_seats:       '잔여석 0 (매진)',
+  not_found:        '등급 패널에 없음',
+  no_candidates:    '좌석 색상 미감지',
+  next_step_failed: '다음단계 이동 실패',
+};
 
 async function selectSeat(page, config) {
   // 등급 목록·좌석도가 렌더링될 때까지 대기 (최대 40초)
@@ -916,22 +924,40 @@ async function selectSeat(page, config) {
     ...(config.fallbackGrades || []),
   ];
 
+  if (gradeQueue.length === 1) {
+    log('   ℹ️  폴백 없음 (TICKETBOT_FALLBACK_GRADES 미설정)');
+  }
+
+  const results = [];
+
   for (let i = 0; i < gradeQueue.length; i++) {
     const { grade, count } = gradeQueue[i];
-    const label = i === 0 ? '1순위' : `${i + 1}순위(폴백)`;
+    const label = `${i + 1}순위`;
     log(`\n🎯 [${label}] "${grade}" ${count}장 시도`);
-    const ok = await trySelectGrade(page, grade, count);
-    if (ok) {
+    const reason = await trySelectGrade(page, grade, count);
+    results.push({ label, grade, count, reason });
+
+    if (reason === 'success') {
       log('🎉 좌석 선택 & 다음단계 완료!');
       return;
     }
+
+    const reasonText = FAIL_REASON[reason] || reason;
+    log(`   → [${label}] 실패: ${reasonText}`);
     if (i < gradeQueue.length - 1) {
-      log(`⚠️  "${grade}" 좌석 선택 실패 → 다음 순위로 전환\n`);
+      log(`   → 다음 순위로 전환...`);
       await sleep(500);
     }
   }
 
-  log('⚠️  모든 순위 좌석 선택 실패. 직접 진행해주세요.');
+  // 최종 실패 요약
+  log('\n─────────────────────────────');
+  log('⚠️  모든 순위 실패 요약:');
+  results.forEach(({ label, grade, count, reason }) => {
+    log(`   ${label}: "${grade}" ${count}장 → ${FAIL_REASON[reason] || reason}`);
+  });
+  log('─────────────────────────────');
+  log('직접 브라우저에서 좌석 선택 후 다음단계를 눌러주세요.');
 }
 
 // ─────────────────────────────────────────────
