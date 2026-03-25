@@ -295,10 +295,25 @@ async function pollAndClickBookingButton(page, targetDate) {
       if (text.includes('오픈') || text.includes('예정')) { await sleep(100); continue; }
 
       await btn.scrollIntoViewIfNeeded();
-      // 팝업 오버레이로 인한 throw 무시 (클릭 자체는 성공할 수 있음)
-      await btn.click().catch(() => {});
-      // 팝업 렌더링 대기 → 다음 iteration에서 팝업 감지
-      await sleep(200);
+      const box = await btn.boundingBox().catch(() => null);
+      if (!box) { await sleep(100); continue; }
+      const tx = box.x + box.width / 2;
+      const ty = box.y + box.height / 2;
+
+      // 자연스러운 마우스 이동 후 클릭 (mousemove 이벤트 포함)
+      await page.mouse.move(tx - 120, ty + 40);
+      await sleep(40);
+      await page.mouse.move(tx, ty, { steps: 12 });
+      await sleep(60);
+      await page.mouse.click(tx, ty);
+
+      // 팝업이 나타날 때까지 최대 2초 대기 → 재클릭 방지
+      const appeared = await page.waitForSelector('.common_modal[role="dialog"]', { timeout: 2000 })
+        .then(() => true).catch(() => false);
+      if (appeared) {
+        log(`✅ 예매하기 클릭 성공 (${attempt + 1}번째 시도) → 팝업 감지`);
+        break;
+      }
     } catch {
       await sleep(100);
     }
@@ -362,6 +377,11 @@ async function handleConfirmPopup(page, label = '', timeout = 10000) {
         if (clickCount === 0) {
           log(`🔍 확인 버튼: ${btnInfo.tag}.${btnInfo.cls} z=${btnInfo.z} @ (${Math.round(btnInfo.x)},${Math.round(btnInfo.y)})`);
         }
+        // 자연스러운 마우스 이동 후 클릭
+        await page.mouse.move(btnInfo.x - 80, btnInfo.y + 20);
+        await sleep(30);
+        await page.mouse.move(btnInfo.x, btnInfo.y, { steps: 8 });
+        await sleep(50);
         await page.mouse.click(btnInfo.x, btnInfo.y);
         clickCount++;
         await sleep(500);
