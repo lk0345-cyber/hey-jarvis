@@ -723,36 +723,101 @@ async function findSeatsByScreenshot(page, needed) {
 }
 
 // 다음단계 버튼 클릭 후 이동 감지 (URL 변화 또는 페이지 내용 변화)
-async function clickNextStep(page, urlBefore) {
+async function clickNextStep(page, urlBefore, shotIndex) {
+  const home = require('os').homedir();
+
   const nextBtn = page.locator('button:has-text("다음단계"), a:has-text("다음단계")').first();
-  if (!await nextBtn.isVisible().catch(() => false)) return false;
+  if (!await nextBtn.isVisible().catch(() => false)) {
+    log('   ⚠️  다음단계 버튼 안 보임');
+    return false;
+  }
+
+  // 클릭 전 선택 좌석 상태 로그
+  const stateBefore = await page.evaluate(() => {
+    const txt = document.body?.innerText || '';
+    const m = txt.match(/선택된\s*좌석[^\n]*/);
+    return m ? m[0].trim() : '(좌석정보없음)';
+  }).catch(() => '?');
+  log(`   📋 클릭 전 상태: ${stateBefore}`);
 
   const box = await nextBtn.boundingBox().catch(() => null);
-  if (box) log(`   ▶ 다음단계 @ (${Math.round(box.x+box.width/2)}, ${Math.round(box.y+box.height/2)})`);
+  const cx = box ? Math.round(box.x + box.width / 2) : 0;
+  const cy = box ? Math.round(box.y + box.height / 2) : 0;
+  log(`   ▶ 다음단계 클릭 @ (${cx}, ${cy})`);
 
-  // 버튼 중앙을 직접 마우스 클릭 (element.click() 대신 좌표 클릭)
   if (box) {
-    await page.mouse.move(box.x + box.width/2, box.y + box.height/2, { steps: 5 });
+    await page.mouse.move(cx, cy, { steps: 5 });
     await sleep(100);
-    await page.mouse.click(box.x + box.width/2, box.y + box.height/2);
+    await page.mouse.click(cx, cy);
   } else {
     await nextBtn.click();
   }
 
-  // 이동 감지: URL 변화 OR 페이지 내용 변화 (권종/배송 등 다음 단계 텍스트)
-  for (let i = 0; i < 10; i++) {
+  // 클릭 직후 600ms 후 스크린샷 → 무슨 일이 일어나는지 확인
+  await sleep(600);
+  const shotPath = `${home}/Desktop/next-step-${shotIndex ?? 0}.png`;
+  await page.screenshot({ path: shotPath }).catch(() => {});
+  log(`   📸 클릭 후 스크린샷 → ${shotPath}`);
+
+  // 모달/팝업 자동 처리 (DOM 기반 확인창, 경고창 등)
+  const popupHandled = await page.evaluate(() => {
+    const txt = document.body?.innerText || '';
+    // 이미 다음 단계로 이동했으면 팝업 처리 불필요
+    if (txt.includes('권종') || txt.includes('배송') || txt.includes('결제수단')) return 'navigated';
+
+    // 모달/팝업 버튼 탐색: 확인 / 네 / 선택완료 / 직접선택
+    const candidates = Array.from(document.querySelectorAll('button, a[role="button"]'));
+    const confirmLabels = ['확인', '네', '선택완료', '직접선택', '계속하기', '진행', 'OK'];
+    for (const btn of candidates) {
+      const label = btn.innerText?.trim() || '';
+      if (confirmLabels.some(l => label === l || label.includes(l))) {
+        const rect = btn.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0 && !btn.disabled) {
+          btn.click();
+          return `popup:${label}`;
+        }
+      }
+    }
+    return null;
+  }).catch(() => null);
+
+  if (popupHandled) log(`   🔔 팝업 처리: ${popupHandled}`);
+
+  if (popupHandled === 'navigated') return true;
+  if (popupHandled && popupHandled.startsWith('popup:')) await sleep(800);
+
+  // 이동 감지: URL 변화 OR 페이지 내용 변화
+  for (let i = 0; i < 12; i++) {
     await sleep(400);
-    if (page.url() !== urlBefore) return true;
+    if (page.url() !== urlBefore) {
+      log(`   ✅ URL 변화 감지 → ${page.url().split('/').slice(-2).join('/')}`);
+      return true;
+    }
     const moved = await page.evaluate(() => {
       const txt = document.body?.innerText || '';
       return txt.includes('권종') || txt.includes('배송') || txt.includes('결제수단');
     }).catch(() => false);
-    if (moved) return true;
+    if (moved) { log('   ✅ 페이지 내용 변화 감지 (권종/배송)'); return true; }
     // 새 탭 확인
     const newTab = page.context().pages().find(p => p !== page && !p.isClosed());
     if (newTab && newTab.url() !== 'about:blank') {
       log(`   📄 새 탭 감지 → ${newTab.url().split('?')[0].split('/').slice(-2).join('/')}`);
       return true;
+    }
+    // 팝업이 새로 생겼으면 한번 더 처리
+    if (i === 2) {
+      const retry = await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll('button, a[role="button"]'));
+        for (const btn of btns) {
+          const label = btn.innerText?.trim() || '';
+          if (['확인', '네', '선택완료'].some(l => label === l)) {
+            const rect = btn.getBoundingClientRect();
+            if (rect.width > 0 && !btn.disabled) { btn.click(); return label; }
+          }
+        }
+        return null;
+      }).catch(() => null);
+      if (retry) log(`   🔔 추가 팝업 처리: ${retry}`);
     }
   }
   return false;
@@ -760,55 +825,54 @@ async function clickNextStep(page, urlBefore) {
 
 async function clickAvailableSeats(page, ticketCount) {
   log(`🪑 좌석 ${ticketCount}장 선택 중...`);
+  const home = require('os').homedir();
   const urlBefore = page.url();
 
-  // 디버그 스크린샷 저장
-  await page.screenshot({ path: `${require('os').homedir()}/Desktop/seat-before.png` }).catch(() => {});
+  // 클릭 전 스크린샷
+  await page.screenshot({ path: `${home}/Desktop/seat-before.png` }).catch(() => {});
 
-  const candidates = await findSeatsByScreenshot(page, ticketCount * 4);
+  const candidates = await findSeatsByScreenshot(page, ticketCount * 3);
   if (candidates.length === 0) {
     log('   ⚠️  좌석 후보 없음. 직접 선택해주세요.');
     return false;
   }
-  log(`   후보: ${candidates.slice(0,6).map(s=>`(${s.x},${s.y})n=${s.n}`).join(' ')}`);
+  log(`   후보: ${candidates.slice(0, 8).map(s => `(${s.x},${s.y})n=${s.n}`).join(' ')}`);
 
-  // 전략: 좌석 클릭 → 2초 대기 → 다음단계 최대 5회 재시도
-  // 이미 선택됐으면 재클릭 안 함 (재클릭 시 선택 해제됨)
-  for (let ci = 0; ci < Math.min(candidates.length, 4); ci++) {
+  // ① ticketCount 만큼 좌석 클릭 (한 번에)
+  //    이후 다음단계 버튼만 반복 시도 — 절대 추가 좌석을 클릭하지 않음
+  let clicked = 0;
+  for (let ci = 0; ci < candidates.length && clicked < ticketCount; ci++) {
     const { x, y, n } = candidates[ci];
-    log(`   🪑 좌석 클릭 @ (${x}, ${y}) n=${n}`);
+    log(`   🪑 좌석 클릭 ${clicked + 1}/${ticketCount} @ (${x}, ${y}) n=${n}`);
     await page.mouse.click(x, y);
-    await sleep(2000); // 캔버스 선택 등록 완료 대기
-
-    // 선택 상태 확인
-    const selected = await page.evaluate(() => {
-      const txt = document.body?.innerText || '';
-      return /선택된\s*좌석/.test(txt) || /선택된좌석/.test(txt);
-    }).catch(() => false);
-
-    if (selected) {
-      log(`   ✅ 좌석 선택 확인 → 다음단계 시도`);
-    } else {
-      log(`   ⚠️  선택 미확인 → 다음단계 시도 (선택됐을 수 있음)`);
-    }
-
-    // 다음단계 최대 4회 시도 (좌석 선택 유지 상태에서)
-    for (let retry = 0; retry < 4; retry++) {
-      if (retry > 0) await sleep(1000);
-      const ok = await clickNextStep(page, urlBefore);
-      if (ok) {
-        await page.screenshot({ path: `${require('os').homedir()}/Desktop/seat-after.png` }).catch(() => {});
-        log(`   ✅ 다음단계 이동 성공!`);
-        return true;
-      }
-      log(`   ↩️  이동 실패 (${retry + 1}/4)`);
-    }
-
-    // 4회 모두 실패 → 다음 좌석 후보로 이동 (기존 좌석은 이미 해제됐을 것)
-    log(`   → 다음 좌석 후보 시도`);
+    await sleep(1200);
+    clicked++;
   }
 
-  await page.screenshot({ path: `${require('os').homedir()}/Desktop/seat-after.png` }).catch(() => {});
+  // 좌석 클릭 후 상태 스크린샷
+  await page.screenshot({ path: `${home}/Desktop/seat-clicked.png` }).catch(() => {});
+
+  // 선택 상태 확인
+  const selInfo = await page.evaluate(() => {
+    const txt = document.body?.innerText || '';
+    const m = txt.match(/선택된\s*좌석[^\n]*/);
+    return m ? m[0].trim() : null;
+  }).catch(() => null);
+  log(`   📋 선택 상태: ${selInfo ?? '(정보없음)'}`);
+
+  // ② 다음단계를 최대 8회 시도 — 좌석 추가 클릭 없이
+  for (let retry = 0; retry < 8; retry++) {
+    if (retry > 0) await sleep(1000);
+    const ok = await clickNextStep(page, urlBefore, retry);
+    if (ok) {
+      await page.screenshot({ path: `${home}/Desktop/seat-after.png` }).catch(() => {});
+      log(`   ✅ 다음단계 이동 성공!`);
+      return true;
+    }
+    log(`   ↩️  다음단계 이동 실패 (${retry + 1}/8)`);
+  }
+
+  await page.screenshot({ path: `${home}/Desktop/seat-after.png` }).catch(() => {});
   log('⚠️  자동 진행 실패. 직접 좌석 클릭 후 다음단계를 눌러주세요.');
   return false;
 }
