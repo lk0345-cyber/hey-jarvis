@@ -603,10 +603,10 @@ async function runTicketBot(config) {
     try { await dialog.accept(); } catch { /* ignore */ }
   });
 
-  // 전면 팝업 배너 리소스 요청 차단 (아예 안 뜨게)
+  // FlashBanner 광고만 차단 (예매 관련 팝업은 허용)
   await page.route('**/*', (route) => {
     const url = route.request().url();
-    if (url.includes('FlashBanner') || url.includes('full_page_pop')) {
+    if (url.includes('FlashBanner')) {
       route.abort();
     } else {
       route.continue();
@@ -616,12 +616,12 @@ async function runTicketBot(config) {
   try {
     await login(page, config);
     await enterReservePage(page, config);
-    // 대기열 처리와 팝업 확인을 병렬 실행 → 팝업이 뜨는 즉시 클릭
+    // 대기열 처리와 팝업 확인을 병렬 실행
     await Promise.all([
       handleQueueIfAppears(page),
-      handleConfirmPopup(page, '예매안내'),
+      // 팝업이 렌더링될 시간 확보 후 클릭
+      sleep(2000).then(() => handleConfirmPopup(page, '예매안내', 10000)),
     ]);
-    // 대기열이 있었던 경우 대기열 해소 후 팝업이 다시 뜰 수 있으므로 재시도
     await handleConfirmPopup(page, '예매안내(재)', 3000).catch(() => {});
     await waitForCaptchaDone(page);
     await selectSeat(page, config);
