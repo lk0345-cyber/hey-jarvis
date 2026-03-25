@@ -285,10 +285,12 @@ async function pollAndClickBookingButton(page, targetDate) {
       const text = await btn.textContent().catch(() => '');
       if (text.includes('오픈') || text.includes('예정')) { await sleep(100); continue; }
 
-      // 요소가 뷰포트 안에 오도록 스크롤 후 클릭 (즉시 리턴 - 팝업은 외부에서 처리)
+      // 팝업 핸들러를 먼저 시작하고 클릭 → 팝업이 뜨자마자 잡기
       await btn.scrollIntoViewIfNeeded();
+      const popupPromise = handleConfirmPopup(page, '예매안내', 8000);
       await btn.click();
       log(`✅ 예매하기 클릭 성공 (${attempt + 1}번째 시도)`);
+      await popupPromise;
       return;
     } catch {
       await sleep(100);
@@ -309,28 +311,28 @@ async function handleConfirmPopup(page, label = '', timeout = 10000) {
 
   while (Date.now() < deadline) {
     try {
-      // :text-is 로 button/a/span/div 모두 탐색 (마지막 = 가장 최근 팝업 버튼)
-      const btn = page.locator(':text-is("확인")').last();
+      // :text() 부분일치로 button/a/span/div 모두 탐색 (마지막 = 가장 최근 팝업 버튼)
+      const btn = page.locator(':text("확인")').last();
       const box = await btn.boundingBox().catch(() => null);
       if (box && box.width > 0 && box.height > 0) {
         // isTrusted:true 실제 마우스 클릭
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
         clickCount++;
-        await sleep(300);
-        // 팝업이 사라졌으면 성공
+        await sleep(200);
+        // 팝업이 사라졌으면 성공 (페이지 이동도 포함)
         const still = await btn.isVisible().catch(() => false);
         if (!still) {
           log(`✅ 팝업 확인 클릭 완료${label ? ` [${label}]` : ''}`);
           return;
         }
-        // 3회 이상 클릭해도 사라지지 않으면 강제 진행 (상시 노출 버튼과 혼동)
+        // 3회 이상 클릭해도 사라지지 않으면 강제 진행
         if (clickCount >= 3) {
           log(`✅ 팝업 확인 클릭 완료 (강제)${label ? ` [${label}]` : ''}`);
           return;
         }
       }
     } catch { /* 무시 */ }
-    await sleep(100);
+    await sleep(50);
   }
   log(`⚠️  팝업 처리 실패${label ? ` [${label}]` : ''}: timeout`);
 }
@@ -617,12 +619,10 @@ async function runTicketBot(config) {
 
   try {
     await login(page, config);
-    await enterReservePage(page, config);
-    // 1) 예매안내 팝업 처리 (스포츠 페이지에서 뜨는 팝업 - 확인 클릭 시 예매 페이지로 이동)
-    await handleConfirmPopup(page, '예매안내', 10000);
-    // 2) 예매 페이지로 이동 완료 대기
+    await enterReservePage(page, config); // 예매안내 팝업 처리 포함
+    // 예매 페이지 이동 완료 대기
     await page.waitForURL('**/reserve/**', { timeout: 20000 }).catch(() => {});
-    // 3) 팝업 이후 대기열 처리 (정시 오픈 때 최대 10분)
+    // 대기열 처리 (정시 오픈 때 최대 10분)
     await handleQueueIfAppears(page, 30000);
     await waitForCaptchaDone(page);
     await selectSeat(page, config);
