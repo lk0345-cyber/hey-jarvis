@@ -185,11 +185,11 @@ async function waitForOpenTime(openTimeStr) {
 // 대기열(Queue) 팝업 처리
 // ─────────────────────────────────────────────
 
-async function handleQueueIfAppears(page) {
-  // 대기열 팝업 감지 (최대 3분 대기)
+async function handleQueueIfAppears(page, detectTimeout = 8000) {
+  // 대기열 팝업 감지
   try {
-    const queueSelector = 'text=대기, text=잠시 후, text=접속자가 많아, [class*="queue"], [class*="waiting"]';
-    await page.waitForSelector(queueSelector, { timeout: 4000 });
+    const queueSelector = 'text=대기순번, text=접속 대기중, text=접속자가 많아, text=잠시만 기다리시면';
+    await page.waitForSelector(queueSelector, { timeout: detectTimeout });
     log('🚦 대기열 팝업 감지됨. 자동 대기 중...');
 
     // 대기열이 끝날 때까지 반복 확인 (최대 10분)
@@ -306,30 +306,27 @@ async function pollAndClickBookingButton(page, targetDate) {
 // ─────────────────────────────────────────────
 
 async function handleConfirmPopup(page, label = '', timeout = 8000) {
-  const sel = ':is(button, a, span, div, input[type="button"]):has-text("확인")';
   const deadline = Date.now() + timeout;
 
   while (Date.now() < deadline) {
-    // 메인 프레임 + 모든 iframe 순서로 탐색
+    // 모든 프레임에서 JS로 직접 클릭 (좌표 계산 없이 즉시 실행)
     const frames = [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame())];
-
     for (const frame of frames) {
-      try {
-        const btn = frame.locator(sel).last();
-        const box = await btn.boundingBox().catch(() => null);
-        if (!box || box.width === 0) continue;
+      const clicked = await frame.evaluate(() => {
+        const el = [...document.querySelectorAll('button, a, span, div')]
+          .find(e => e.textContent?.trim() === '확인' && e.offsetParent !== null);
+        if (el) { el.click(); return true; }
+        return false;
+      }).catch(() => false);
 
-        log(`📋 팝업 처리${label ? ` [${label}]` : ''}...`);
-        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-        await sleep(600);
+      if (clicked) {
         log(`✅ 팝업 확인 클릭 완료${label ? ` [${label}]` : ''}`);
+        await sleep(200);
         return;
-      } catch { /* frame 이탈 등 무시 */ }
+      }
     }
-
-    await sleep(300);
+    await sleep(100);
   }
-
   log(`⚠️  팝업 처리 실패${label ? ` [${label}]` : ''}: timeout`);
 }
 
@@ -616,11 +613,10 @@ async function runTicketBot(config) {
   try {
     await login(page, config);
     await enterReservePage(page, config);
-    // 대기열 + 팝업을 병렬로: 팝업은 클릭 직후부터 최대 12초 대기
-    await Promise.all([
-      handleQueueIfAppears(page),
-      handleConfirmPopup(page, '예매안내', 12000),
-    ]);
+    // 1) 예매안내 팝업 먼저 빠르게 처리 (NetFunnel 세션 유지)
+    await handleConfirmPopup(page, '예매안내', 10000);
+    // 2) 팝업 이후 대기열 처리 (정시 오픈 때 최대 10분)
+    await handleQueueIfAppears(page, 30000);
     await waitForCaptchaDone(page);
     await selectSeat(page, config);
   } catch (err) {
