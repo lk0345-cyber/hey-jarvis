@@ -670,8 +670,8 @@ async function clickAvailableSeats(page, ticketCount) {
       // 2순위: SVG rect / circle / path
       for (const el of document.querySelectorAll('rect, circle, path')) {
         if (coords.length >= needed) break;
-        // 버튼 내부 아이콘(컨트롤 버튼) 제외
-        if (el.closest('button')) continue;
+        // 버튼/링크/클릭핸들러 컨테이너 내부 아이콘 제외
+        if (el.closest('button, a, [role="button"], [onclick]')) continue;
         // fill 속성이 'none'이면 CSS computed 값 사용
         const attrFill = el.getAttribute('fill');
         const fill = (attrFill && attrFill !== 'none')
@@ -681,11 +681,13 @@ async function clickAvailableSeats(page, ticketCount) {
         const cls = ((el.className?.baseVal || el.className) + '').toLowerCase();
         if (cls.includes('disabled') || cls.includes('sold') || cls.includes('bg') || cls.includes('background')) continue;
         const r = el.getBoundingClientRect();
-        // 지도 영역(화면 왼쪽)에 있는 좌석만, 컨트롤 버튼 영역(우측 끝) 제외
+        const cx = r.left + r.width / 2;
+        const cy = r.top + r.height / 2;
+        // 지도 컨트롤(우측 끝 x>620, 상단 y<470) 완전 제외
         if (r.width >= 3 && r.width <= 40 && r.height >= 3
-            && r.left < window.innerWidth * 0.72  // 패널/컨트롤 영역 제외
-            && r.top > 200) {                      // 헤더 영역 제외
-          coords.push({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+            && cx < 625   // 지도 컨트롤 버튼 x≈645~670 제외
+            && cy > 470) { // 지도 컨트롤 버튼 y≈291~455 제외
+          coords.push({ x: cx, y: cy });
         }
       }
       return coords;
@@ -735,6 +737,20 @@ async function selectSeat(page, config) {
   await selectBestSubSection(page, ticketCount);
   await handleSeatTypePopup(page, targetGrade);
   await clickAvailableSeats(page, ticketCount);
+
+  // 좌석 선택 여부 확인 (선택된 좌석이 없으면 중단)
+  const selectedCount = await page.evaluate(() => {
+    const txt = document.body?.innerText || '';
+    const m = txt.match(/선택\s*(\d+)\s*석/) || txt.match(/(\d+)\s*석\s*선택/);
+    if (m) return parseInt(m[1]);
+    // 선택된 좌석 스타일 감지
+    return document.querySelectorAll('[class*="selected"], [class*="Selected"], [class*="active-seat"]').length;
+  }).catch(() => 0);
+
+  if (selectedCount === 0) {
+    log('⚠️  좌석이 선택되지 않았습니다. 직접 좌석을 클릭한 후 다음단계를 눌러주세요.');
+    return;
+  }
 
   log('➡️  다음단계 클릭...');
   await page.locator('button:has-text("다음단계"), a:has-text("다음단계")').first().click();
