@@ -311,23 +311,49 @@ async function handleConfirmPopup(page, label = '', timeout = 10000) {
 
   while (Date.now() < deadline) {
     try {
-      // :text() 부분일치로 button/a/span/div 모두 탐색 (마지막 = 가장 최근 팝업 버튼)
-      const btn = page.locator(':text("확인")').last();
-      const box = await btn.boundingBox().catch(() => null);
-      if (box && box.width > 0 && box.height > 0) {
-        // isTrusted:true 실제 마우스 클릭
+      let btnLoc = null;
+      let box = null;
+
+      // ticketlink 모달 클래스 우선 탐색 → 전체 폴백
+      for (const sel of [
+        '.layer_pop :text-is("확인")',
+        '.popup_wrap :text-is("확인")',
+        '[class*="popup"] :text-is("확인")',
+        ':text-is("확인")',
+      ]) {
+        const loc = page.locator(sel).last();
+        const b = await loc.boundingBox().catch(() => null);
+        if (b && b.width > 0 && b.height > 0) {
+          if (clickCount === 0) {
+            const info = await loc.evaluate(el =>
+              `${el.tagName}.${[...el.classList].join('.')}`
+            ).catch(() => '?');
+            log(`🔍 확인 버튼: [${sel}] → ${info} @ (${Math.round(b.x)},${Math.round(b.y)})`);
+          }
+          btnLoc = loc;
+          box = b;
+          break;
+        }
+      }
+
+      if (btnLoc && box) {
+        // 예매안내 팝업은 첫 클릭 전 1초 대기 (NetFunnel 키 초기화)
+        if (clickCount === 0 && label === '예매안내') {
+          log('⏳ NetFunnel 키 초기화 대기 (1초)...');
+          await sleep(1000);
+          box = await btnLoc.boundingBox().catch(() => null) || box;
+        }
+
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
         clickCount++;
-        await sleep(200);
-        // 팝업이 사라졌으면 성공 (페이지 이동도 포함)
-        const still = await btn.isVisible().catch(() => false);
+        await sleep(500); // 팝업 닫힘 애니메이션 대기
+        const still = await btnLoc.isVisible().catch(() => false);
         if (!still) {
           log(`✅ 팝업 확인 클릭 완료${label ? ` [${label}]` : ''}`);
           return;
         }
-        // 3회 이상 클릭해도 사라지지 않으면 강제 진행
         if (clickCount >= 3) {
-          log(`✅ 팝업 확인 클릭 완료 (강제)${label ? ` [${label}]` : ''}`);
+          log(`⚠️  확인 ${clickCount}회 클릭 후 팝업 유지 → 강제 진행`);
           return;
         }
       }
