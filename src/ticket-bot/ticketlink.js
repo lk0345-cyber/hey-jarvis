@@ -980,94 +980,40 @@ async function selectSeat(page, config) {
 // ─────────────────────────────────────────────
 
 async function handlePostSeatFlow(page) {
-  // ── 권종 선택 단계 ──────────────────────────
-  log('\n📋 권종 선택 단계 대기...');
-  try {
-    await page.waitForFunction(() => {
+  const home = require('os').homedir();
+
+  // 결제 페이지 도달까지 다음단계 버튼만 반복 클릭 (최대 5회)
+  for (let step = 0; step < 5; step++) {
+    await sleep(1500);
+
+    const isPayment = await page.evaluate(() => {
       const txt = document.body?.innerText || '';
-      return txt.includes('권종') || txt.includes('할인') || txt.includes('ticket type');
-    }, null, { timeout: 15000 });
-  } catch {
-    log('   ⚠️  권종 페이지 미감지 → 현재 상태로 진행');
-  }
-  await sleep(1000);
+      return txt.includes('결제수단') || txt.includes('신용카드') || txt.includes('카카오페이') || txt.includes('결제하기');
+    }).catch(() => false);
 
-  // 드롭다운/select 에서 "일반" 선택
-  const selChanged = await page.evaluate(() => {
-    const selects = Array.from(document.querySelectorAll('select'));
-    let cnt = 0;
-    for (const sel of selects) {
-      // "일반" 옵션이 있으면 선택
-      const opt = Array.from(sel.options).find(o => o.text.includes('일반'));
-      if (opt) { sel.value = opt.value; sel.dispatchEvent(new Event('change', { bubbles: true })); cnt++; }
+    if (isPayment) {
+      log('\n💳 결제 페이지 도달!');
+      await page.screenshot({ path: `${home}/Desktop/payment-page.png` }).catch(() => {});
+      log('   📸 ~/Desktop/payment-page.png 저장');
+      log('   ✋ 결제수단 선택 & 결제는 직접 진행해주세요.');
+      return;
     }
-    return cnt;
-  });
-  if (selChanged) log(`   ✅ 권종 드롭다운 ${selChanged}개 → 일반 선택`);
 
-  await sleep(500);
-  log(`   📋 권종 페이지 상태: ${(await page.evaluate(() => document.body?.innerText?.slice(0, 120)?.replace(/\n/g, ' ')).catch(() => ''))}`);
+    const nextBtn = page.locator('button:has-text("다음단계"), a:has-text("다음단계")').first();
+    if (!await nextBtn.isVisible().catch(() => false)) break;
 
-  // 다음단계 클릭
-  const urlAfterTicketType = page.url();
-  const nextBtnTicket = page.locator('button:has-text("다음단계"), a:has-text("다음단계")').first();
-  if (await nextBtnTicket.isVisible().catch(() => false)) {
-    await nextBtnTicket.click();
-    log('   ▶ 권종 다음단계 클릭');
-    await sleep(2000);
-  }
+    const urlBefore = page.url();
+    await nextBtn.click();
+    log(`   ▶ 다음단계 클릭 (${step + 1}단계)`);
 
-  // ── 배송 방법 선택 단계 ─────────────────────
-  const urlAfterDelivery = page.url();
-  const hasDelivery = await page.evaluate(() => {
-    const txt = document.body?.innerText || '';
-    return txt.includes('배송') || txt.includes('수령') || txt.includes('전자티켓') || txt.includes('모바일');
-  }).catch(() => false);
-
-  if (hasDelivery) {
-    log('\n📦 배송 방법 선택 단계');
-    // 전자티켓/모바일 우선 선택
-    const deliverySet = await page.evaluate(() => {
-      const labels = ['전자티켓', '모바일', 'e-ticket', '앱수령'];
-      for (const inp of document.querySelectorAll('input[type="radio"]')) {
-        const label = document.querySelector(`label[for="${inp.id}"]`)?.innerText || inp.value || '';
-        if (labels.some(l => label.includes(l))) {
-          inp.click();
-          return label.trim();
-        }
-      }
-      // 첫 번째 라디오 선택
-      const first = document.querySelector('input[type="radio"]');
-      if (first) { first.click(); return '(첫번째 옵션)'; }
-      return null;
-    });
-    if (deliverySet) log(`   ✅ 배송 선택: ${deliverySet}`);
-    await sleep(500);
-
-    const nextBtnDelivery = page.locator('button:has-text("다음단계"), a:has-text("다음단계")').first();
-    if (await nextBtnDelivery.isVisible().catch(() => false)) {
-      await nextBtnDelivery.click();
-      log('   ▶ 배송 다음단계 클릭');
-      await sleep(2000);
+    // URL 또는 내용 변화 대기
+    for (let i = 0; i < 10; i++) {
+      await sleep(400);
+      if (page.url() !== urlBefore) break;
     }
   }
 
-  // ── 결제수단 선택 단계 ─────────────────────
-  const hasPayment = await page.evaluate(() => {
-    const txt = document.body?.innerText || '';
-    return txt.includes('결제수단') || txt.includes('신용카드') || txt.includes('카카오페이') || txt.includes('결제하기');
-  }).catch(() => false);
-
-  if (hasPayment) {
-    log('\n💳 결제 페이지 도달!');
-    const home = require('os').homedir();
-    await page.screenshot({ path: `${home}/Desktop/payment-page.png` }).catch(() => {});
-    log('   📸 ~/Desktop/payment-page.png 저장 완료');
-    log('   ✋ 결제수단 선택 & 결제는 직접 진행해주세요.');
-  } else {
-    log('\n⚠️  결제 페이지 미감지 — 현재 URL: ' + page.url().split('?')[0]);
-    log('   직접 이어서 진행해주세요.');
-  }
+  log('\n⚠️  결제 페이지 미감지 — 직접 이어서 진행해주세요.');
 }
 
 // ─────────────────────────────────────────────
