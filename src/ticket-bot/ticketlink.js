@@ -590,28 +590,7 @@ async function selectBestSubSection(page, ticketCount) {
     log('   ⚠️  새로고침 버튼 미감지 → 스킵');
   }
 
-  // 좌석 색상이 나타날 때까지 대기 (최대 10초)
-  await page.waitForFunction(() => {
-    function isUnavailableColor(fill) {
-      if (!fill || fill === 'none' || fill === 'transparent') return true;
-      const f = fill.toLowerCase().trim();
-      if (f === 'white' || f === '#fff' || f === '#ffffff') return true;
-      if (/^#[c-f][c-f][c-f]/i.test(f)) return true;
-      if (/^#[89ab][89ab][89ab]/i.test(f)) return true;
-      const rgb = f.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-      if (rgb && +rgb[1] > 160 && +rgb[2] > 160 && +rgb[3] > 160) return true;
-      return false;
-    }
-    return Array.from(document.querySelectorAll('rect, circle, path')).some(el => {
-      const attrFill = el.getAttribute('fill');
-      const fill = (attrFill && attrFill !== 'none') ? attrFill : (window.getComputedStyle(el).fill || '');
-      if (isUnavailableColor(fill)) return false;
-      const r = el.getBoundingClientRect();
-      return r.width >= 3 && r.width <= 40;
-    });
-  }, null, { timeout: 10000 }).catch(() => {});
-  log('   좌석 상세 뷰 로드 완료');
-  await sleep(300);
+  await sleep(800);
 }
 
 // ─────────────────────────────────────────────
@@ -691,6 +670,8 @@ async function clickAvailableSeats(page, ticketCount) {
       // 2순위: SVG rect / circle / path
       for (const el of document.querySelectorAll('rect, circle, path')) {
         if (coords.length >= needed) break;
+        // 버튼 내부 아이콘(컨트롤 버튼) 제외
+        if (el.closest('button')) continue;
         // fill 속성이 'none'이면 CSS computed 값 사용
         const attrFill = el.getAttribute('fill');
         const fill = (attrFill && attrFill !== 'none')
@@ -700,7 +681,10 @@ async function clickAvailableSeats(page, ticketCount) {
         const cls = ((el.className?.baseVal || el.className) + '').toLowerCase();
         if (cls.includes('disabled') || cls.includes('sold') || cls.includes('bg') || cls.includes('background')) continue;
         const r = el.getBoundingClientRect();
-        if (r.width >= 3 && r.width <= 40 && r.height >= 3) {
+        // 지도 영역(화면 왼쪽)에 있는 좌석만, 컨트롤 버튼 영역(우측 끝) 제외
+        if (r.width >= 3 && r.width <= 40 && r.height >= 3
+            && r.left < window.innerWidth * 0.72  // 패널/컨트롤 영역 제외
+            && r.top > 200) {                      // 헤더 영역 제외
           coords.push({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
         }
       }
