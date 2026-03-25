@@ -410,32 +410,43 @@ async function handleConfirmPopup(page, label = '', timeout = 10000) {
 // ─────────────────────────────────────────────
 
 async function waitForCaptchaDone(page) {
-  // 15초 안에 ① 보안문자(입력완료 버튼) 또는 ② 등급 목록(좌석선택 화면) 중 먼저 등장하는 것으로 분기
-  const which = await Promise.race([
-    page.waitForSelector('button:has-text("입력완료")', { timeout: 15000 })
-      .then(() => 'captcha').catch(() => null),
-    page.waitForSelector(
-      'li:has-text("내야지정석"), li:has-text("잔디석"), li:has-text("응원단석")',
-      { timeout: 15000 }
-    ).then(() => 'seat').catch(() => null),
-  ]);
+  const deadline = Date.now() + 120000; // 최대 2분 폴링
 
-  if (which === 'captcha') {
-    log('🔒 보안문자 입력 대기 중...');
-    log('   → 화면의 보안문자를 직접 입력하고 [입력완료] 버튼을 눌러주세요.');
-    // 입력완료 버튼이 사라질 때까지 300ms 간격으로 폴링 (최대 2분)
-    for (let i = 0; i < 400; i++) {
-      await sleep(300);
-      const still = await page.locator('button:has-text("입력완료")').count().catch(() => 0);
-      if (still === 0) break;
-    }
-    log('✅ 보안문자 통과');
-    await sleep(800);
-  } else if (which === 'seat') {
-    log('✅ 보안문자 없음, 좌석선택 화면 진입');
-  } else {
-    log('⚠️  보안문자/좌석화면 감지 실패 → 그대로 진행');
+  while (Date.now() < deadline) {
+    try {
+      // ① 보안문자 입력완료 버튼이 있으면 사용자가 풀 때까지 대기
+      const captchaCount = await page.locator('button:has-text("입력완료")').count().catch(() => 0);
+      if (captchaCount > 0) {
+        log('🔒 보안문자 감지 → 직접 입력 후 [입력완료] 클릭해주세요.');
+        for (let i = 0; i < 600; i++) {
+          await sleep(300);
+          const still = await page.locator('button:has-text("입력완료")').count().catch(() => 0);
+          if (still === 0) break;
+        }
+        log('✅ 보안문자 통과');
+        await sleep(800);
+        return;
+      }
+
+      // ② 좌석선택 화면 도달 여부 (텍스트·클래스·SVG·canvas 중 하나라도 있으면 OK)
+      const onSeatPage = await page.evaluate(() => {
+        const txt = document.body?.innerText || '';
+        if (txt.includes('내야지정석') || txt.includes('잔디석') || txt.includes('응원단석')) return true;
+        if (document.querySelector('svg, canvas')) return true;
+        if (document.querySelector('[class*="grade"],[class*="Grade"],[class*="seat_grade"]')) return true;
+        if (document.querySelector('iframe')) return true;
+        return false;
+      }).catch(() => false);
+
+      if (onSeatPage) {
+        log('✅ 좌석선택 화면 진입 확인');
+        return;
+      }
+    } catch { /* 무시 */ }
+
+    await sleep(300);
   }
+  log('⚠️  보안문자/좌석화면 감지 실패 → 그대로 진행');
 }
 
 // ─────────────────────────────────────────────
@@ -445,7 +456,10 @@ async function waitForCaptchaDone(page) {
 async function clickTargetGradeInPanel(page, targetGrade) {
   log(`🎫 등급 선택: "${targetGrade}"`);
 
-  const gradeItems = page.locator('li, [class*="grade-item"], [class*="seat-grade"]');
+  const gradeItems = page.locator(
+    'li, [class*="grade_item"], [class*="gradeItem"], [class*="grade-item"], ' +
+    '[class*="seat_grade"], [class*="seatGrade"], [class*="grade_list"] > *, [class*="gradeList"] > *'
+  );
   const count = await gradeItems.count();
 
   for (let i = 0; i < count; i++) {
@@ -611,11 +625,16 @@ async function clickAvailableSeats(page, ticketCount) {
 async function selectSeat(page, config) {
   const { targetGrade, ticketCount } = config;
 
-  // 등급 목록이 실제로 렌더링될 때까지 대기 (최대 40초)
-  await page.waitForSelector(
-    'li:has-text("내야지정석"), li:has-text("잔디석"), li:has-text("응원단석"), svg, canvas',
-    { timeout: 40000 }
-  );
+  // 등급 목록·좌석도가 렌더링될 때까지 대기 (최대 40초)
+  // waitForFunction으로 다양한 지표를 동시에 검사
+  await page.waitForFunction(() => {
+    const txt = document.body?.innerText || '';
+    if (txt.includes('내야지정석') || txt.includes('잔디석') || txt.includes('응원단석')) return true;
+    if (document.querySelector('[class*="grade"],[class*="Grade"],[class*="seat_grade"]')) return true;
+    if (document.querySelector('svg, canvas')) return true;
+    if (document.querySelector('iframe')) return true;
+    return false;
+  }, {}, { timeout: 40000 }).catch(() => log('⚠️  좌석화면 로드 대기 timeout → 그대로 진행'));
   log('🗺️  좌석 선택 화면 로드 완료');
   await sleep(1000);
 
