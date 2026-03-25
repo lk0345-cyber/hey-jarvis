@@ -510,41 +510,45 @@ async function clickTargetGradeInPanel(page, targetGrade) {
 // ─────────────────────────────────────────────
 
 async function selectBestSubSection(page, ticketCount) {
-  await sleep(600);
+  await sleep(800);
 
-  const subItems = page.locator(
-    '[class*="sub"] li, [class*="section-item"], [class*="zone-item"], li[class*="area"]'
-  );
-  const count = await subItems.count();
-  if (count === 0) return;
+  // 텍스트 패턴으로 구역 목록 탐색: "407구역 1석", "밤켈존 3석", "500구역 12석" 등
+  const sectionData = await page.evaluate(() => {
+    const result = [];
+    const seen = new Set();
+    const pattern = /^(\d+구역|[가-힣0-9]+존(?:\s*\d+구역)?)\s*(\d+)\s*석$/;
 
-  log(`📍 하위 구역 선택 (요청 ${ticketCount}장)...`);
-
-  for (let i = 0; i < count; i++) {
-    const item = subItems.nth(i);
-    const text = await item.textContent().catch(() => '');
-    const seatMatch = text.match(/(\d+)\s*석/);
-    const available = seatMatch ? parseInt(seatMatch[1]) : 0;
-
-    if (available >= ticketCount) {
-      log(`   → ${text.trim()} 선택`);
-      await item.click();
-      await sleep(600);
-      return;
+    for (const el of document.querySelectorAll('li, div, span')) {
+      if (el.children.length > 5) continue; // 컨테이너는 스킵
+      const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      const m = txt.match(pattern);
+      if (!m) continue;
+      const name = m[1].trim();
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const count = parseInt(m[2]);
+      if (count <= 0) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 30 || rect.height < 8 || rect.width > 600) continue;
+      result.push({ name, count, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
     }
+    return result;
+  });
+
+  if (sectionData.length === 0) {
+    log('⚠️  구역 목록 없음 → 좌석 직접 클릭으로 진행');
+    return;
   }
 
-  // 가장 많은 구역 선택
-  let maxCount = 0, maxIdx = 0;
-  for (let i = 0; i < count; i++) {
-    const text = await subItems.nth(i).textContent().catch(() => '');
-    const m = text.match(/(\d+)\s*석/);
-    const n = m ? parseInt(m[1]) : 0;
-    if (n > maxCount) { maxCount = n; maxIdx = i; }
-  }
-  log(`⚠️  ${ticketCount}석 이상 구역 없음. 최대(${maxCount}석) 구역 선택`);
-  await subItems.nth(maxIdx).click();
-  await sleep(600);
+  log(`📍 구역 목록: ${sectionData.slice(0, 8).map(s => `${s.name}(${s.count}석)`).join(', ')}`);
+
+  const eligible = sectionData.filter(s => s.count >= ticketCount);
+  const best = (eligible.length > 0 ? eligible : sectionData)
+    .reduce((a, b) => (a.count >= b.count ? a : b));
+
+  log(`   → "${best.name}" 선택 (${best.count}석 가용)`);
+  await page.mouse.click(best.x, best.y);
+  await sleep(1500); // 지도 줌인 대기
 }
 
 // ─────────────────────────────────────────────
@@ -590,45 +594,58 @@ async function clickAvailableSeats(page, ticketCount) {
   let clicked = 0;
 
   for (let attempt = 0; attempt < 5 && clicked < ticketCount; attempt++) {
-    const newClicks = await page.evaluate(({ needed }) => {
+    if (attempt > 0) await sleep(600);
+
+    // 클릭 가능한 좌석 좌표 수집 (evaluate에서 좌표만 반환 → Playwright mouse로 클릭)
+    const seatCoords = await page.evaluate((needed) => {
       function isUnavailableColor(fill) {
         if (!fill || fill === 'none' || fill === 'transparent') return true;
         const f = fill.toLowerCase().trim();
-        return (
-          /^#[c-f][c-f][c-f]/i.test(f) ||
-          /^#[89ab][89ab][89ab]/i.test(f) ||
-          f === 'white' || f === '#fff' || f === '#ffffff'
-        );
+        if (f === 'white' || f === '#fff' || f === '#ffffff') return true;
+        if (/^#[c-f][c-f][c-f]/i.test(f)) return true;
+        if (/^#[89ab][89ab][89ab]/i.test(f)) return true;
+        // rgb(N, N, N) where N > 160 → 회색 계열
+        const rgb = f.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+        if (rgb) {
+          const [r, g, b] = [+rgb[1], +rgb[2], +rgb[3]];
+          if (r > 160 && g > 160 && b > 160) return true;
+        }
+        return false;
       }
 
-      const byClass = Array.from(
-        document.querySelectorAll('[class*="seat"]:not([class*="disabled"]):not([class*="sold"]):not([class*="empty"])')
-      ).filter((el) => {
-        const r = el.getBoundingClientRect();
-        return r.width > 0 && r.height > 0;
-      });
+      const coords = [];
 
-      const bySvg = Array.from(document.querySelectorAll('rect, circle')).filter((el) => {
-        const fill = el.getAttribute('fill') || window.getComputedStyle(el).fill;
-        if (isUnavailableColor(fill)) return false;
-        const cls = (el.className?.baseVal || '').toLowerCase();
-        if (cls.includes('disabled') || cls.includes('sold') || cls.includes('bg')) return false;
+      // 1순위: HTML 클래스 기반 좌석
+      for (const el of document.querySelectorAll('[class*="seat"]:not([class*="disabled"]):not([class*="sold"]):not([class*="empty"])')) {
+        if (coords.length >= needed) break;
         const r = el.getBoundingClientRect();
-        return r.width >= 4 && r.width <= 30;
-      });
-
-      const candidates = byClass.length > 0 ? byClass : bySvg;
-      let count = 0;
-      for (const el of candidates) {
-        if (count >= needed) break;
-        el.click();
-        count++;
+        if (r.width >= 4 && r.width <= 50 && r.height >= 4) {
+          coords.push({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+        }
       }
-      return count;
-    }, { needed: ticketCount - clicked });
+      if (coords.length >= needed) return coords;
 
-    clicked += newClicks;
-    if (clicked < ticketCount) await sleep(500);
+      // 2순위: SVG rect / circle / path
+      for (const el of document.querySelectorAll('rect, circle, path')) {
+        if (coords.length >= needed) break;
+        const fill = el.getAttribute('fill') || window.getComputedStyle(el).fill || '';
+        if (isUnavailableColor(fill)) continue;
+        const cls = ((el.className?.baseVal || el.className) + '').toLowerCase();
+        if (cls.includes('disabled') || cls.includes('sold') || cls.includes('bg') || cls.includes('background')) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width >= 4 && r.width <= 40 && r.height >= 4) {
+          coords.push({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+        }
+      }
+      return coords;
+    }, ticketCount - clicked);
+
+    for (const { x, y } of seatCoords) {
+      await page.mouse.click(x, y);
+      await sleep(400);
+      clicked++;
+      log(`   🪑 좌석 클릭 ${clicked}/${ticketCount}`);
+    }
   }
 
   if (clicked === 0) {
@@ -637,7 +654,7 @@ async function clickAvailableSeats(page, ticketCount) {
     log(`✅ 좌석 ${clicked}/${ticketCount}장 선택 완료`);
   }
 
-  await handleConfirmPopup(page, '좌석 확인');
+  await handleConfirmPopup(page, '좌석 확인', 3000);
   await sleep(500);
 }
 
@@ -663,7 +680,6 @@ async function selectSeat(page, config) {
   await clickTargetGradeInPanel(page, targetGrade);
   await selectBestSubSection(page, ticketCount);
   await handleSeatTypePopup(page, targetGrade);
-  await handleConfirmPopup(page, '유형 확인');
   await clickAvailableSeats(page, ticketCount);
 
   log('➡️  다음단계 클릭...');
