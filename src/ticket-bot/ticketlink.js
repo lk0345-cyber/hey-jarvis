@@ -314,7 +314,14 @@ async function handleConfirmPopup(page, label = '', timeout = 8000) {
     const count = await confirmBtn.count();
     if (count > 0) {
       log(`📋 팝업 처리${label ? ` [${label}]` : ''}...`);
-      await confirmBtn.last().click({ force: true });
+      const btn = confirmBtn.last();
+      const box = await btn.boundingBox();
+      if (box) {
+        // isTrusted:true 실제 마우스 클릭
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      } else {
+        await btn.click({ force: true });
+      }
       await sleep(600);
       log(`✅ 팝업 확인 클릭 완료${label ? ` [${label}]` : ''}`);
     }
@@ -328,21 +335,32 @@ async function handleConfirmPopup(page, label = '', timeout = 8000) {
 // ─────────────────────────────────────────────
 
 async function waitForCaptchaDone(page) {
-  // 입력완료 버튼이 존재하는지 먼저 확인
-  const hasCaptcha = await page.locator('button:has-text("입력완료")').count().catch(() => 0);
-  if (hasCaptcha === 0) return; // 보안문자 단계 없음 → 바로 통과
+  // 15초 안에 ① 보안문자(입력완료 버튼) 또는 ② 등급 목록(좌석선택 화면) 중 먼저 등장하는 것으로 분기
+  const which = await Promise.race([
+    page.waitForSelector('button:has-text("입력완료")', { timeout: 15000 })
+      .then(() => 'captcha').catch(() => null),
+    page.waitForSelector(
+      '[class*="grade-list"], [class*="gradeList"], li:has-text("내야"), li:has-text("잔디"), li:has-text("응원"), .reserve-seat',
+      { timeout: 15000 }
+    ).then(() => 'seat').catch(() => null),
+  ]);
 
-  log('🔒 보안문자 입력 대기 중...');
-  log('   → 화면의 보안문자를 직접 입력하고 [입력완료] 버튼을 눌러주세요.');
-
-  // waitForFunction 으로 폴링 → SPA 전환/프레임 이탈에도 안정적으로 감지
-  await page.waitForFunction(
-    () => !Array.from(document.querySelectorAll('button')).some((b) => b.textContent?.trim() === '입력완료'),
-    { timeout: 120000, polling: 300 },
-  );
-
-  log('✅ 보안문자 통과');
-  await sleep(800);
+  if (which === 'captcha') {
+    log('🔒 보안문자 입력 대기 중...');
+    log('   → 화면의 보안문자를 직접 입력하고 [입력완료] 버튼을 눌러주세요.');
+    // 입력완료 버튼이 사라질 때까지 300ms 간격으로 폴링 (최대 2분)
+    for (let i = 0; i < 400; i++) {
+      await sleep(300);
+      const still = await page.locator('button:has-text("입력완료")').count().catch(() => 0);
+      if (still === 0) break;
+    }
+    log('✅ 보안문자 통과');
+    await sleep(800);
+  } else if (which === 'seat') {
+    log('✅ 보안문자 없음, 좌석선택 화면 진입');
+  } else {
+    log('⚠️  보안문자/좌석화면 감지 실패 → 그대로 진행');
+  }
 }
 
 // ─────────────────────────────────────────────
