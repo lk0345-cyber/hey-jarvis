@@ -150,6 +150,9 @@ async function extractScheduleId(page, targetDate) {
 // 전략 B: 정시 폴링 (100ms 간격)
 // ─────────────────────────────────────────────
 
+// 페이지 로딩 선행 시간 (ms) — 11시 정각보다 이 만큼 먼저 폴링 시작
+const OPEN_LEAD_MS = 3500;
+
 async function waitForOpenTime(openTimeStr) {
   if (openTimeStr === 'now') {
     log('⚡ 즉시 예매 모드 — 대기 없이 바로 진행');
@@ -161,13 +164,14 @@ async function waitForOpenTime(openTimeStr) {
   const target = new Date(now);
   target.setHours(h, m, s, 0);
 
-  const waitMs = target.getTime() - now.getTime();
+  // 페이지 로딩 선행: 목표 시각 OPEN_LEAD_MS 전에 폴링 시작
+  const waitMs = target.getTime() - now.getTime() - OPEN_LEAD_MS;
   if (waitMs <= 0) {
     log('⚡ 오픈 시간이 이미 지났습니다. 바로 진행합니다.');
     return;
   }
 
-  log(`⏱  오픈까지 ${Math.round(waitMs / 1000)}초 대기 (목표: ${openTimeStr})`);
+  log(`⏱  오픈까지 ${Math.round((waitMs + OPEN_LEAD_MS) / 1000)}초 대기 → ${openTimeStr} 기준 ${OPEN_LEAD_MS / 1000}초 선행 시작`);
 
   if (waitMs > 31000) await sleep(waitMs - 30000);
 
@@ -179,7 +183,7 @@ async function waitForOpenTime(openTimeStr) {
   }
   await sleep(remaining);
   process.stdout.write('\r');
-  log('🚀 오픈 시간! 예매 시작!');
+  log(`🚀 폴링 시작! (${openTimeStr} 기준 ${OPEN_LEAD_MS / 1000}초 선행)`);
 }
 
 // ─────────────────────────────────────────────
@@ -477,6 +481,7 @@ async function waitForCaptchaDone(page) {
 // 등급 패널에서 목표 등급 클릭
 // ─────────────────────────────────────────────
 
+// 등급 클릭 — true: 클릭 성공, false: 목록에 없거나 0석
 async function clickTargetGradeInPanel(page, targetGrade) {
   log(`🎫 등급 선택: "${targetGrade}"`);
 
@@ -494,16 +499,18 @@ async function clickTargetGradeInPanel(page, targetGrade) {
     const seatMatch = text.match(/(\d+)\s*석/);
     const seatCount = seatMatch ? parseInt(seatMatch[1]) : -1;
     if (seatCount === 0) {
-      log(`⚠️  "${targetGrade}" 현재 0석. 계속 진행...`);
+      log(`⚠️  "${targetGrade}" 잔여석 0 → 다음 순위로 건너뜀`);
+      return false;
     }
 
     await item.click();
-    log(`✅ "${targetGrade}" 클릭`);
+    log(`✅ "${targetGrade}" 클릭 (잔여: ${seatCount >= 0 ? seatCount + '석' : '?'})`);
     await sleep(600);
-    return;
+    return true;
   }
 
-  throw new Error(`등급 "${targetGrade}"을 목록에서 찾을 수 없습니다.`);
+  log(`⚠️  등급 "${targetGrade}"을 목록에서 찾을 수 없음 → 다음 순위로`);
+  return false;
 }
 
 // ─────────────────────────────────────────────
@@ -881,11 +888,18 @@ async function clickAvailableSeats(page, ticketCount) {
 // 전체 좌석 선택 플로우
 // ─────────────────────────────────────────────
 
-async function selectSeat(page, config) {
-  const { targetGrade, ticketCount } = config;
+// 단일 등급 시도 — true: 성공, false: 좌석 없음(다음 순위 시도 가능)
+async function trySelectGrade(page, grade, count) {
+  const found = await clickTargetGradeInPanel(page, grade);
+  if (!found) return false;
 
+  await selectBestSubSection(page, count);
+  await handleSeatTypePopup(page, grade);
+  return await clickAvailableSeats(page, count);
+}
+
+async function selectSeat(page, config) {
   // 등급 목록·좌석도가 렌더링될 때까지 대기 (최대 40초)
-  // waitForFunction으로 다양한 지표를 동시에 검사
   await page.waitForFunction(() => {
     const txt = document.body?.innerText || '';
     if (txt.includes('내야지정석') || txt.includes('잔디석') || txt.includes('응원단석')) return true;
@@ -896,14 +910,28 @@ async function selectSeat(page, config) {
   log('🗺️  좌석 선택 화면 로드 완료');
   await sleep(1000);
 
-  await clickTargetGradeInPanel(page, targetGrade);
-  await selectBestSubSection(page, ticketCount);
-  await handleSeatTypePopup(page, targetGrade);
+  // 1순위 + 폴백 순서대로 시도
+  const gradeQueue = [
+    { grade: config.targetGrade, count: config.ticketCount },
+    ...(config.fallbackGrades || []),
+  ];
 
-  const success = await clickAvailableSeats(page, ticketCount);
-  if (success) {
-    log('🎉 좌석 선택 & 다음단계 완료! 이후 단계(권종/배송/결제)를 진행해주세요.');
+  for (let i = 0; i < gradeQueue.length; i++) {
+    const { grade, count } = gradeQueue[i];
+    const label = i === 0 ? '1순위' : `${i + 1}순위(폴백)`;
+    log(`\n🎯 [${label}] "${grade}" ${count}장 시도`);
+    const ok = await trySelectGrade(page, grade, count);
+    if (ok) {
+      log('🎉 좌석 선택 & 다음단계 완료!');
+      return;
+    }
+    if (i < gradeQueue.length - 1) {
+      log(`⚠️  "${grade}" 좌석 선택 실패 → 다음 순위로 전환\n`);
+      await sleep(500);
+    }
   }
+
+  log('⚠️  모든 순위 좌석 선택 실패. 직접 진행해주세요.');
 }
 
 // ─────────────────────────────────────────────
