@@ -638,66 +638,60 @@ async function clickAvailableSeats(page, ticketCount) {
   for (let attempt = 0; attempt < 5 && clicked < ticketCount; attempt++) {
     if (attempt > 0) await sleep(600);
 
-    // 클릭 가능한 좌석 좌표 수집 (evaluate에서 좌표만 반환 → Playwright mouse로 클릭)
+    // 클릭 가능한 좌석 좌표 수집
     const seatCoords = await page.evaluate((needed) => {
+      const coords = [];
+
+      // ★ 1순위: SVG <title> "N열 N번" 포함 = 실제 좌석 요소
+      // 툴팁 "[외야지정석] 501구역 9열 7번" 은 SVG <title> 자식에서 나옴
+      for (const titleEl of document.querySelectorAll('title')) {
+        if (coords.length >= needed) break;
+        const txt = titleEl.textContent || '';
+        if (!txt.includes('열')) continue;       // "9열" 포함 = 좌석
+        const seat = titleEl.parentElement;
+        if (!seat) continue;
+        const r = seat.getBoundingClientRect();
+        if (r.width >= 2 && r.width <= 60 && r.height >= 2) {
+          coords.push({ x: r.left + r.width / 2, y: r.top + r.height / 2, label: txt.trim() });
+        }
+      }
+      if (coords.length > 0) return coords;
+
+      // ★ 2순위: 색상 기반 SVG (버튼 내부 및 컨트롤 영역 제외)
       function isUnavailableColor(fill) {
         if (!fill || fill === 'none' || fill === 'transparent') return true;
         const f = fill.toLowerCase().trim();
         if (f === 'white' || f === '#fff' || f === '#ffffff') return true;
         if (/^#[c-f][c-f][c-f]/i.test(f)) return true;
         if (/^#[89ab][89ab][89ab]/i.test(f)) return true;
-        // rgb(N, N, N) where N > 160 → 회색 계열
         const rgb = f.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-        if (rgb) {
-          const [r, g, b] = [+rgb[1], +rgb[2], +rgb[3]];
-          if (r > 160 && g > 160 && b > 160) return true;
-        }
+        if (rgb && +rgb[1] > 160 && +rgb[2] > 160 && +rgb[3] > 160) return true;
         return false;
       }
-
-      const coords = [];
-
-      // 1순위: HTML 클래스 기반 좌석
-      for (const el of document.querySelectorAll('[class*="seat"]:not([class*="disabled"]):not([class*="sold"]):not([class*="empty"])')) {
-        if (coords.length >= needed) break;
-        const r = el.getBoundingClientRect();
-        if (r.width >= 4 && r.width <= 50 && r.height >= 4) {
-          coords.push({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
-        }
-      }
-      if (coords.length >= needed) return coords;
-
-      // 2순위: SVG rect / circle / path
       for (const el of document.querySelectorAll('rect, circle, path')) {
         if (coords.length >= needed) break;
-        // 버튼/링크/클릭핸들러 컨테이너 내부 아이콘 제외
         if (el.closest('button, a, [role="button"], [onclick]')) continue;
-        // fill 속성이 'none'이면 CSS computed 값 사용
         const attrFill = el.getAttribute('fill');
-        const fill = (attrFill && attrFill !== 'none')
-          ? attrFill
-          : (window.getComputedStyle(el).fill || '');
+        const fill = (attrFill && attrFill !== 'none') ? attrFill : (window.getComputedStyle(el).fill || '');
         if (isUnavailableColor(fill)) continue;
         const cls = ((el.className?.baseVal || el.className) + '').toLowerCase();
         if (cls.includes('disabled') || cls.includes('sold') || cls.includes('bg') || cls.includes('background')) continue;
         const r = el.getBoundingClientRect();
         const cx = r.left + r.width / 2;
         const cy = r.top + r.height / 2;
-        // 지도 컨트롤(우측 끝 x>620, 상단 y<470) 완전 제외
-        if (r.width >= 3 && r.width <= 40 && r.height >= 3
-            && cx < 625   // 지도 컨트롤 버튼 x≈645~670 제외
-            && cy > 470) { // 지도 컨트롤 버튼 y≈291~455 제외
-          coords.push({ x: cx, y: cy });
+        if (r.width >= 3 && r.width <= 40 && r.height >= 3 && cx < 620 && cy > 340) {
+          coords.push({ x: cx, y: cy, label: '' });
         }
       }
       return coords;
     }, ticketCount - clicked);
 
-    if (seatCoords.length === 0 && attempt === 0) {
-      log(`   ⚠️  좌석 요소 미감지 → 재시도`);
+    if (seatCoords.length === 0) {
+      log(`   ⚠️  좌석 요소 미감지 (${attempt + 1}번째 시도) → 재시도`);
+      continue;
     }
-    for (const { x, y } of seatCoords) {
-      log(`   🪑 좌석 클릭 ${clicked + 1}/${ticketCount} @ (${Math.round(x)}, ${Math.round(y)})`);
+    for (const { x, y, label } of seatCoords.slice(0, ticketCount - clicked)) {
+      log(`   🪑 좌석 클릭 ${clicked + 1}/${ticketCount} @ (${Math.round(x)}, ${Math.round(y)})${label ? ' [' + label + ']' : ''}`);
       await page.mouse.click(x, y);
       await sleep(600);
       clicked++;
