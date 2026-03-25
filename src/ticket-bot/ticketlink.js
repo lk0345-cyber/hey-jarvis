@@ -309,15 +309,15 @@ async function pollAndClickBookingButton(page, targetDate) {
 
 async function handleConfirmPopup(page, label = '', timeout = 8000) {
   try {
-    await page.waitForSelector('.modal, [role="dialog"], .popup, [class*="modal"]', { timeout });
-    const confirmBtn = page.locator('button:has-text("완료"), button:has-text("확인")');
+    // 모달 컨테이너 대신 "확인" 버튼 자체를 직접 기다림
+    await page.waitForSelector('button:has-text("확인")', { timeout });
+    const confirmBtn = page.locator('button:has-text("확인")');
     const count = await confirmBtn.count();
     if (count > 0) {
       log(`📋 팝업 처리${label ? ` [${label}]` : ''}...`);
       const btn = confirmBtn.last();
       const box = await btn.boundingBox();
       if (box) {
-        // isTrusted:true 실제 마우스 클릭
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
       } else {
         await btn.click({ force: true });
