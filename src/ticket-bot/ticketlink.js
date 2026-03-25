@@ -481,8 +481,8 @@ async function waitForCaptchaDone(page) {
 // 등급 패널에서 목표 등급 클릭
 // ─────────────────────────────────────────────
 
-// 등급 클릭 — 'ok': 성공 / 'zero_seats': 0석 / 'not_found': 목록에 없음
-async function clickTargetGradeInPanel(page, targetGrade) {
+// 등급 클릭 — 'ok': 성공 / 'zero_seats': 0석 / 'insufficient_seats': 잔여<필요 / 'not_found': 목록에 없음
+async function clickTargetGradeInPanel(page, targetGrade, needed) {
   log(`🎫 등급 선택: "${targetGrade}"`);
 
   const gradeItems = page.locator(
@@ -501,6 +501,10 @@ async function clickTargetGradeInPanel(page, targetGrade) {
     if (seatCount === 0) {
       log(`   ❌ "${targetGrade}" 잔여석 0석 (매진)`);
       return 'zero_seats';
+    }
+    if (seatCount > 0 && seatCount < needed) {
+      log(`   ❌ "${targetGrade}" 잔여 ${seatCount}석 < 필요 ${needed}장 → 부족`);
+      return 'insufficient_seats';
     }
 
     await item.click();
@@ -898,9 +902,9 @@ async function clickAvailableSeats(page, ticketCount) {
 // 전체 좌석 선택 플로우
 // ─────────────────────────────────────────────
 
-// 단일 등급 시도 — 'success' | 'zero_seats' | 'not_found' | 'no_candidates' | 'next_step_failed'
+// 단일 등급 시도 — 'success' | 'zero_seats' | 'insufficient_seats' | 'not_found' | 'no_candidates' | 'next_step_failed'
 async function trySelectGrade(page, grade, count) {
-  const gradeResult = await clickTargetGradeInPanel(page, grade);
+  const gradeResult = await clickTargetGradeInPanel(page, grade, count);
   if (gradeResult !== 'ok') return gradeResult;
 
   await selectBestSubSection(page, count);
@@ -910,8 +914,9 @@ async function trySelectGrade(page, grade, count) {
 }
 
 const FAIL_REASON = {
-  zero_seats:       '잔여석 0 (매진)',
-  not_found:        '등급 패널에 없음',
+  zero_seats:         '잔여석 0 (매진)',
+  insufficient_seats: '잔여석 부족 (필요 장수 미달)',
+  not_found:          '등급 패널에 없음',
   no_candidates:    '좌석 색상 미감지',
   next_step_failed: '다음단계 이동 실패',
 };
