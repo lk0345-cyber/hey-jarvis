@@ -311,27 +311,31 @@ async function pollAndClickBookingButton(page, targetDate) {
 // ─────────────────────────────────────────────
 
 async function handleConfirmPopup(page, label = '', timeout = 8000) {
-  // button, a, span, div 등 태그 불문하고 "확인" 텍스트 요소 탐색
   const sel = ':is(button, a, span, div, input[type="button"]):has-text("확인")';
-  try {
-    await page.waitForSelector(sel, { timeout });
-    const confirmBtn = page.locator(sel);
-    const count = await confirmBtn.count();
-    if (count > 0) {
-      log(`📋 팝업 처리${label ? ` [${label}]` : ''}...`);
-      const btn = confirmBtn.last();
-      const box = await btn.boundingBox();
-      if (box) {
+  const deadline = Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    // 메인 프레임 + 모든 iframe 순서로 탐색
+    const frames = [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame())];
+
+    for (const frame of frames) {
+      try {
+        const btn = frame.locator(sel).last();
+        const box = await btn.boundingBox().catch(() => null);
+        if (!box || box.width === 0) continue;
+
+        log(`📋 팝업 처리${label ? ` [${label}]` : ''}...`);
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-      } else {
-        await btn.click({ force: true });
-      }
-      await sleep(600);
-      log(`✅ 팝업 확인 클릭 완료${label ? ` [${label}]` : ''}`);
+        await sleep(600);
+        log(`✅ 팝업 확인 클릭 완료${label ? ` [${label}]` : ''}`);
+        return;
+      } catch { /* frame 이탈 등 무시 */ }
     }
-  } catch (e) {
-    log(`⚠️  팝업 처리 실패${label ? ` [${label}]` : ''}: ${e.message}`);
+
+    await sleep(300);
   }
+
+  log(`⚠️  팝업 처리 실패${label ? ` [${label}]` : ''}: timeout`);
 }
 
 // ─────────────────────────────────────────────
