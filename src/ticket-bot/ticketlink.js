@@ -308,10 +308,11 @@ async function pollAndClickBookingButton(page, targetDate) {
 // ─────────────────────────────────────────────
 
 async function handleConfirmPopup(page, label = '', timeout = 8000) {
+  // button, a, span, div 등 태그 불문하고 "확인" 텍스트 요소 탐색
+  const sel = ':is(button, a, span, div, input[type="button"]):has-text("확인")';
   try {
-    // 모달 컨테이너 대신 "확인" 버튼 자체를 직접 기다림
-    await page.waitForSelector('button:has-text("확인")', { timeout });
-    const confirmBtn = page.locator('button:has-text("확인")');
+    await page.waitForSelector(sel, { timeout });
+    const confirmBtn = page.locator(sel);
     const count = await confirmBtn.count();
     if (count > 0) {
       log(`📋 팝업 처리${label ? ` [${label}]` : ''}...`);
