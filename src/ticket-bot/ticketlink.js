@@ -756,8 +756,7 @@ async function clickAvailableSeats(page, ticketCount) {
     log(`✅ 좌석 ${clicked}/${ticketCount}장 선택 완료`);
   }
 
-  await handleConfirmPopup(page, '좌석 확인', 3000);
-  await sleep(500);
+  await sleep(300);
 }
 
 // ─────────────────────────────────────────────
