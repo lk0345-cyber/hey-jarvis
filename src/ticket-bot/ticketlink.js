@@ -722,20 +722,43 @@ async function findSeatsByScreenshot(page, needed) {
   return seats;
 }
 
-// 좌석 클릭 → 다음단계 → URL 변화로 성공 판단
-// 반환값: true=성공(다음 페이지 이동), false=실패
+// 좌석 클릭 → 다음단계 → 실제 페이지 이동 확인
+// 반환값: true=성공, false=실패
 async function tryClickSeatAndNext(page, x, y, urlBefore) {
   await page.mouse.click(x, y);
-  await sleep(600);
+  await sleep(700);
 
   const nextBtn = page.locator('button:has-text("다음단계"), a:has-text("다음단계")').first();
-  if (!await nextBtn.isVisible().catch(() => false)) return false;
+  if (!await nextBtn.isVisible().catch(() => false)) {
+    log('   ⚠️  다음단계 버튼 미노출');
+    return false;
+  }
 
-  await nextBtn.click();
-  // URL 변화 최대 2.5초 대기
-  for (let i = 0; i < 5; i++) {
-    await sleep(500);
+  // 버튼 위치 로그 (잘못된 요소 클릭 디버깅용)
+  const box = await nextBtn.boundingBox().catch(() => null);
+  if (box) log(`   ▶ 다음단계 클릭 @ (${Math.round(box.x+box.width/2)}, ${Math.round(box.y+box.height/2)})`);
+
+  // waitForNavigation과 동시에 클릭 (풀페이지 이동 감지)
+  const [navResult] = await Promise.all([
+    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 4000 }).catch(() => null),
+    nextBtn.click(),
+  ]);
+
+  if (navResult !== null) {
+    log(`   ✅ 페이지 이동 감지 (waitForNavigation)`);
+    return true;
+  }
+
+  // URL 폴링 폴백 (SPA 방식 변화)
+  for (let i = 0; i < 6; i++) {
+    await sleep(400);
     if (page.url() !== urlBefore) return true;
+    // 새 탭 확인 (예매 다음 단계가 새 탭으로 열리는 경우)
+    const newTab = page.context().pages().find(p => p !== page && !p.isClosed() && p.url().includes('/reserve/'));
+    if (newTab) {
+      log(`   📄 새 탭 감지 → ${newTab.url().split('?')[0].split('/').slice(-2).join('/')}`);
+      return true;
+    }
   }
   return false;
 }
@@ -759,17 +782,37 @@ async function clickAvailableSeats(page, ticketCount) {
 
     log(`   후보 ${candidates.length}개: ${candidates.slice(0,6).map(s=>`(${s.x},${s.y})n=${s.n}`).join(' ')}`);
 
-    // 각 후보 좌표 순서대로 시도 → 다음단계 URL 변화로 성공 판정
-    for (const { x, y, n } of candidates) {
+    // 각 후보 좌표 시도 → 다음단계 + 이동 확인
+    // ※ 실패 후 다음 후보는 별도 좌석 클릭 없이 다음단계만 재시도
+    //   (이미 선택된 좌석이 있을 수 있으므로 재클릭으로 해제되지 않도록)
+    for (let i = 0; i < candidates.length; i++) {
+      const { x, y, n } = candidates[i];
       log(`   🪑 시도 @ (${x}, ${y}) n=${n}`);
       const ok = await tryClickSeatAndNext(page, x, y, urlBefore);
       if (ok) {
         await page.screenshot({ path: `${require('os').homedir()}/Desktop/seat-after.png` }).catch(() => {});
-        log(`   ✅ 좌석 선택 & 다음단계 이동 성공! → ${page.url().split('?')[0].split('/').slice(-2).join('/')}`);
+        log(`   ✅ 좌석 선택 & 다음단계 이동 성공!`);
         return true;
       }
-      log(`   ↩️  URL 변화 없음 → 다음 후보 시도`);
-      await sleep(200);
+      // 실패 시: 현재 선택 상태 확인 후 이미 좌석이 선택됐으면 다음단계만 재시도
+      const hasSeat = await page.evaluate(() => {
+        const txt = document.body?.innerText || '';
+        return /선택된\s*좌석/.test(txt) || /선택된좌석/.test(txt);
+      }).catch(() => false);
+      if (hasSeat) {
+        log(`   💡 좌석 선택 상태 확인 → 다음단계 재시도`);
+        const nextBtn2 = page.locator('button:has-text("다음단계"), a:has-text("다음단계")').first();
+        const [nav2] = await Promise.all([
+          page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 4000 }).catch(() => null),
+          nextBtn2.click().catch(() => {}),
+        ]);
+        if (nav2 !== null || page.url() !== urlBefore) {
+          log(`   ✅ 재시도 성공!`);
+          return true;
+        }
+      }
+      log(`   ↩️  이동 실패 → 다음 후보 시도`);
+      await sleep(300);
     }
   }
 
