@@ -292,10 +292,7 @@ async function pollAndClickBookingButton(page, targetDate) {
 
     if (coords) {
       // 실제 마우스 클릭 → isTrusted: true 이벤트 → NetFunnel 세션 정상 초기화
-      await Promise.all([
-        page.waitForURL('**/reserve/**', { timeout: 10000 }).catch(() => {}),
-        page.mouse.click(coords.x, coords.y),
-      ]);
+      await page.mouse.click(coords.x, coords.y);
       log(`✅ 예매하기 클릭 성공 (${attempt + 1}번째 시도)`);
       return;
     }
@@ -620,13 +617,11 @@ async function runTicketBot(config) {
   try {
     await login(page, config);
     await enterReservePage(page, config);
-    // 대기열 처리와 팝업 확인을 병렬 실행
+    // 대기열 + 팝업을 병렬로: 팝업은 클릭 직후부터 최대 12초 대기
     await Promise.all([
       handleQueueIfAppears(page),
-      // 팝업이 렌더링될 시간 확보 후 클릭
-      sleep(2000).then(() => handleConfirmPopup(page, '예매안내', 10000)),
+      handleConfirmPopup(page, '예매안내', 12000),
     ]);
-    await handleConfirmPopup(page, '예매안내(재)', 3000).catch(() => {});
     await waitForCaptchaDone(page);
     await selectSeat(page, config);
   } catch (err) {
