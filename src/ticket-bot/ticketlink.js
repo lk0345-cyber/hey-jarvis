@@ -731,29 +731,44 @@ async function clickAvailableSeats(page, ticketCount) {
       continue;
     }
 
+    // 디버그 스크린샷 저장 (클릭 전)
+    await page.screenshot({ path: `${require('os').homedir()}/Desktop/seat-before.png` }).catch(() => {});
+
     for (const { x, y } of seats.slice(0, ticketCount - clicked)) {
       log(`   🪑 좌석 클릭 ${clicked + 1}/${ticketCount} @ (${Math.round(x)}, ${Math.round(y)})`);
       await page.mouse.click(x, y);
-      await sleep(700);
+      await sleep(1000);
       clicked++;
 
-      // 클릭 후 좌석 선택 확인: 선택된 좌석 수가 증가했는지
+      // 클릭 후 스크린샷 저장 (클릭 후 상태 확인용)
+      await page.screenshot({ path: `${require('os').homedir()}/Desktop/seat-after.png` }).catch(() => {});
+
+      // 클릭 후 좌석 선택 확인
       const sel = await page.evaluate(() => {
         const txt = document.body?.innerText || '';
         const m = txt.match(/선택\s*(\d+)\s*석/) || txt.match(/(\d+)\s*석\s*선택/);
-        return m ? parseInt(m[1]) : -1;
+        if (m) return parseInt(m[1]);
+        // 대안: 우측 패널의 좌석 수 표시 탐색
+        for (const el of document.querySelectorAll('span, p, div, li')) {
+          if (el.children.length > 3) continue;
+          const t = (el.textContent || '').trim();
+          if (/^[1-9]\s*\/\s*\d+\s*석$/.test(t)) return 1; // "1/1석" 형태
+          if (/선택.*[1-9]/.test(t)) return 1;
+        }
+        return -1;
       }).catch(() => -1);
       if (sel > 0) {
-        log(`   ✅ 좌석 선택 확인: ${sel}석 선택됨`);
-        break; // 좌석 선택 성공 → 다음 루프
+        log(`   ✅ 좌석 선택 확인`);
+        break;
       }
+      log(`   ⚠️  선택 텍스트 미감지 (클릭은 완료, ~/Desktop/seat-after.png 확인)`);
     }
   }
 
   if (clicked === 0) {
     log('⚠️  자동 좌석 클릭 실패. 직접 선택해주세요.');
   } else {
-    log(`✅ 좌석 ${clicked}/${ticketCount}장 선택 완료`);
+    log(`✅ 좌석 ${clicked}/${ticketCount}장 클릭 완료`);
   }
 
   await sleep(300);
@@ -797,15 +812,31 @@ async function selectSeat(page, config) {
     log(`✅ 좌석 ${selectedCount}석 선택 확인`);
   }
 
-  // 다음단계 버튼 클릭 시도
+  // 다음단계 버튼 클릭 + 실제 페이지 이동 확인
   const nextBtn = page.locator('button:has-text("다음단계"), a:has-text("다음단계")').first();
   const nextVisible = await nextBtn.isVisible().catch(() => false);
-  if (nextVisible) {
-    log('➡️  다음단계 클릭...');
-    await nextBtn.click();
-    log('🎉 좌석 선택 완료! 이후 단계(권종/배송/결제)를 진행해주세요.');
-  } else {
+  if (!nextVisible) {
     log('⚠️  다음단계 버튼 미노출. 직접 좌석 클릭 후 진행해주세요.');
+    return;
+  }
+
+  const urlBefore = page.url();
+  log('➡️  다음단계 클릭...');
+  await nextBtn.click();
+
+  // 최대 5초 URL 변화 대기 (실제 페이지 이동 확인)
+  let navigated = false;
+  for (let i = 0; i < 10; i++) {
+    await sleep(500);
+    if (page.url() !== urlBefore) { navigated = true; break; }
+  }
+
+  if (navigated) {
+    log(`🎉 다음 단계 이동 성공! → ${page.url().split('?')[0].split('/').slice(-2).join('/')}`);
+    log('🎉 이후 단계(권종/배송/결제)를 진행해주세요.');
+  } else {
+    log('⚠️  URL 변화 없음 → 좌석이 실제로 선택되지 않았을 수 있습니다.');
+    log('   seat-before.png / seat-after.png (~/Desktop) 를 확인해주세요.');
   }
 }
 
