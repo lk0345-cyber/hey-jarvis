@@ -648,12 +648,12 @@ async function findSeatsByScreenshot(page, needed) {
   // 좌석 맵 탐색 영역
   // - xMin: 8% (좌측 여백 제외)
   // - xMax: 72% (우측 등급 패널 제외)
-  // - yMin: 45% (상단 헤더/버튼/방향안내 모두 제외 → 실제 좌석은 중하단부터)
-  // - yMax: 92%
+  // - yMin: 45% (상단 헤더/버튼/방향안내 모두 제외)
+  // - yMax: 80% (하단 좌석 범례/legend 제외 - 범례는 보통 85%+ 위치)
   const xMin = Math.floor(W * 0.08);
   const xMax = Math.floor(W * 0.72);
   const yMin = Math.floor(H * 0.45);
-  const yMax = Math.floor(H * 0.92);
+  const yMax = Math.floor(H * 0.80);
 
   // 색상 좌석 픽셀 탐색: 회색/흰색/검정이 아닌 채도 높은 픽셀
   // 단, 매우 밝은 주황/노랑 UI 버튼 색(R>220, G>140) 제외
@@ -697,17 +697,18 @@ async function findSeatsByScreenshot(page, needed) {
 
   if (clusters.length === 0) return [];
 
-  // 픽셀 수(n)가 많은 클러스터 = 실제 좌석 (UI 요소보다 넓은 면적)
-  // n이 너무 적은 단일 픽셀 노이즈 제거
-  const validClusters = clusters.filter(c => c.n >= 3);
+  // 클러스터 필터링:
+  // - n < 3: 노이즈 제거
+  // - n > 120: 너무 큰 덩어리 = 범례/UI 요소 (좌석 한 칸은 보통 n=5~80)
+  const validClusters = clusters.filter(c => c.n >= 3 && c.n <= 120);
+  const fallback = clusters.filter(c => c.n >= 3);  // 폴백용
 
-  log(`   📸 전체클러스터=${clusters.length} 유효(n≥3)=${validClusters.length}`);
+  const pool = validClusters.length > 0 ? validClusters : fallback;
+  log(`   📸 전체클러스터=${clusters.length} 유효(3≤n≤120)=${validClusters.length}`);
 
-  if (validClusters.length === 0) return clusters.map(c => ({ x: c.cx/dpr, y: c.cy/dpr }));
-
-  // viewport 좌표로 변환 (dpr 나누기), 픽셀 수 내림차순(큰 좌석 우선)
-  const seats = validClusters
-    .sort((a, b) => b.n - a.n)  // 면적 큰 클러스터 먼저
+  // y 위치 오름차순 정렬 (위쪽 좌석 먼저)
+  const seats = pool
+    .sort((a, b) => a.cy - b.cy || a.cx - b.cx)
     .slice(0, needed * 4)
     .map(c => ({ x: Math.round(c.cx / dpr), y: Math.round(c.cy / dpr), n: c.n }));
 
