@@ -285,12 +285,9 @@ async function pollAndClickBookingButton(page, targetDate) {
       const text = await btn.textContent().catch(() => '');
       if (text.includes('오픈') || text.includes('예정')) { await sleep(100); continue; }
 
-      // 요소가 뷰포트 안에 오도록 스크롤 후 클릭
+      // 요소가 뷰포트 안에 오도록 스크롤 후 클릭 (즉시 리턴 - 팝업은 외부에서 처리)
       await btn.scrollIntoViewIfNeeded();
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
-        btn.click(),
-      ]);
+      await btn.click();
       log(`✅ 예매하기 클릭 성공 (${attempt + 1}번째 시도)`);
       return;
     } catch {
@@ -305,26 +302,27 @@ async function pollAndClickBookingButton(page, targetDate) {
 // 팝업 확인 버튼 공통 처리
 // ─────────────────────────────────────────────
 
-async function handleConfirmPopup(page, label = '', timeout = 8000) {
+async function handleConfirmPopup(page, label = '', timeout = 10000) {
+  log(`📋 팝업 처리 대기${label ? ` [${label}]` : ''}...`);
   const deadline = Date.now() + timeout;
 
   while (Date.now() < deadline) {
-    // 모든 프레임에서 JS로 직접 클릭 (좌표 계산 없이 즉시 실행)
-    const frames = [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame())];
-    for (const frame of frames) {
-      const clicked = await frame.evaluate(() => {
-        const el = [...document.querySelectorAll('button, a, span, div')]
-          .find(e => e.textContent?.trim() === '확인' && e.offsetParent !== null);
-        if (el) { el.click(); return true; }
-        return false;
-      }).catch(() => false);
-
-      if (clicked) {
-        log(`✅ 팝업 확인 클릭 완료${label ? ` [${label}]` : ''}`);
-        await sleep(200);
-        return;
+    try {
+      // 메인 프레임에서 확인 버튼 탐색 (팝업은 스포츠 페이지 위 오버레이)
+      const btn = page.locator('button:has-text("확인"), a:has-text("확인")').last();
+      const box = await btn.boundingBox().catch(() => null);
+      if (box && box.width > 0 && box.height > 0) {
+        // isTrusted:true 실제 마우스 클릭
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        await sleep(300);
+        // 팝업이 사라졌는지 확인
+        const still = await btn.isVisible().catch(() => false);
+        if (!still) {
+          log(`✅ 팝업 확인 클릭 완료${label ? ` [${label}]` : ''}`);
+          return;
+        }
       }
-    }
+    } catch { /* 무시 */ }
     await sleep(100);
   }
   log(`⚠️  팝업 처리 실패${label ? ` [${label}]` : ''}: timeout`);
@@ -613,9 +611,11 @@ async function runTicketBot(config) {
   try {
     await login(page, config);
     await enterReservePage(page, config);
-    // 1) 예매안내 팝업 먼저 빠르게 처리 (NetFunnel 세션 유지)
+    // 1) 예매안내 팝업 처리 (스포츠 페이지에서 뜨는 팝업 - 확인 클릭 시 예매 페이지로 이동)
     await handleConfirmPopup(page, '예매안내', 10000);
-    // 2) 팝업 이후 대기열 처리 (정시 오픈 때 최대 10분)
+    // 2) 예매 페이지로 이동 완료 대기
+    await page.waitForURL('**/reserve/**', { timeout: 20000 }).catch(() => {});
+    // 3) 팝업 이후 대기열 처리 (정시 오픈 때 최대 10분)
     await handleQueueIfAppears(page, 30000);
     await waitForCaptchaDone(page);
     await selectSeat(page, config);
