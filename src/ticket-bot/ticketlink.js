@@ -633,63 +633,112 @@ async function handleSeatTypePopup(page, targetGrade) {
 async function clickAvailableSeats(page, ticketCount) {
   log(`🪑 사용 가능한 좌석 ${ticketCount}장 선택 중...`);
 
+  // ── 1회만 실행: DOM 구조 디버그 ──
+  const dbg = await page.evaluate(() => ({
+    iframes:  document.querySelectorAll('iframe').length,
+    rects:    document.querySelectorAll('rect').length,
+    circles:  document.querySelectorAll('circle').length,
+    titles:   document.querySelectorAll('title').length,
+    rowTitles: [...document.querySelectorAll('title')].filter(t => t.textContent.includes('열')).length,
+    firstRect: (() => {
+      for (const el of document.querySelectorAll('rect, circle')) {
+        const f = el.getAttribute('fill') || '';
+        const r = el.getBoundingClientRect();
+        if (r.width > 0) return `fill="${f}" @(${Math.round(r.left)},${Math.round(r.top)}) ${Math.round(r.width)}x${Math.round(r.height)}`;
+      }
+      return 'none';
+    })(),
+  })).catch(() => ({}));
+  log(`   📊 DOM: iframe=${dbg.iframes}, rect=${dbg.rects}, circle=${dbg.circles}, title(열)=${dbg.rowTitles}/${dbg.titles}`);
+  log(`   📊 첫번째요소: ${dbg.firstRect}`);
+
+  // ── 탐색 대상 프레임 결정 (메인 + 모든 iframe) ──
+  const allFrames = page.frames();
+  if (allFrames.length > 1) log(`   📊 프레임 수: ${allFrames.length} (iframe 존재)`);
+
   let clicked = 0;
 
   for (let attempt = 0; attempt < 5 && clicked < ticketCount; attempt++) {
-    if (attempt > 0) await sleep(600);
+    if (attempt > 0) await sleep(800);
 
-    // 클릭 가능한 좌석 좌표 수집
-    const seatCoords = await page.evaluate((needed) => {
-      const coords = [];
+    let seatCoords = [];
 
-      // ★ 1순위: SVG <title> "N열 N번" 포함 = 실제 좌석 요소
-      // 툴팁 "[외야지정석] 501구역 9열 7번" 은 SVG <title> 자식에서 나옴
-      for (const titleEl of document.querySelectorAll('title')) {
-        if (coords.length >= needed) break;
-        const txt = titleEl.textContent || '';
-        if (!txt.includes('열')) continue;       // "9열" 포함 = 좌석
-        const seat = titleEl.parentElement;
-        if (!seat) continue;
-        const r = seat.getBoundingClientRect();
-        if (r.width >= 2 && r.width <= 60 && r.height >= 2) {
-          coords.push({ x: r.left + r.width / 2, y: r.top + r.height / 2, label: txt.trim() });
+    for (const frame of allFrames) {
+      if (seatCoords.length > 0) break;
+
+      const found = await frame.evaluate(() => {
+        function isUnavailableColor(fill) {
+          if (!fill || fill === 'none' || fill === 'transparent') return true;
+          const f = fill.toLowerCase().trim();
+          if (f === 'white' || f === '#fff' || f === '#ffffff') return true;
+          if (/^#[c-f][c-f][c-f]/i.test(f)) return true;
+          if (/^#[89ab][89ab][89ab]/i.test(f)) return true;
+          const rgb = f.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+          if (rgb && +rgb[1] > 160 && +rgb[2] > 160 && +rgb[3] > 160) return true;
+          return false;
         }
-      }
-      if (coords.length > 0) return coords;
 
-      // ★ 2순위: 색상 기반 SVG (버튼 내부 및 컨트롤 영역 제외)
-      function isUnavailableColor(fill) {
-        if (!fill || fill === 'none' || fill === 'transparent') return true;
-        const f = fill.toLowerCase().trim();
-        if (f === 'white' || f === '#fff' || f === '#ffffff') return true;
-        if (/^#[c-f][c-f][c-f]/i.test(f)) return true;
-        if (/^#[89ab][89ab][89ab]/i.test(f)) return true;
-        const rgb = f.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-        if (rgb && +rgb[1] > 160 && +rgb[2] > 160 && +rgb[3] > 160) return true;
-        return false;
-      }
-      for (const el of document.querySelectorAll('rect, circle, path')) {
-        if (coords.length >= needed) break;
-        if (el.closest('button, a, [role="button"], [onclick]')) continue;
-        const attrFill = el.getAttribute('fill');
-        const fill = (attrFill && attrFill !== 'none') ? attrFill : (window.getComputedStyle(el).fill || '');
-        if (isUnavailableColor(fill)) continue;
-        const cls = ((el.className?.baseVal || el.className) + '').toLowerCase();
-        if (cls.includes('disabled') || cls.includes('sold') || cls.includes('bg') || cls.includes('background')) continue;
-        const r = el.getBoundingClientRect();
-        const cx = r.left + r.width / 2;
-        const cy = r.top + r.height / 2;
-        if (r.width >= 3 && r.width <= 40 && r.height >= 3 && cx < 620 && cy > 340) {
-          coords.push({ x: cx, y: cy, label: '' });
+        const coords = [];
+
+        // 1순위: SVG <title>에 "열" 포함 = 좌석 메타데이터
+        for (const titleEl of document.querySelectorAll('title')) {
+          const txt = titleEl.textContent || '';
+          if (!txt.includes('열')) continue;
+          const seat = titleEl.parentElement;
+          if (!seat) continue;
+          const r = seat.getBoundingClientRect();
+          if (r.width >= 2 && r.width <= 60 && r.height >= 2)
+            coords.push({ x: r.left + r.width / 2, y: r.top + r.height / 2, label: txt.trim() });
         }
+        if (coords.length > 0) return coords;
+
+        // 2순위: data-* 속성에 좌석 정보
+        for (const el of document.querySelectorAll('[data-seatno],[data-seat-no],[data-seat],[data-row],[data-col]')) {
+          const r = el.getBoundingClientRect();
+          if (r.width >= 2 && r.width <= 60 && r.height >= 2)
+            coords.push({ x: r.left + r.width / 2, y: r.top + r.height / 2, label: el.dataset.seatno || '' });
+        }
+        if (coords.length > 0) return coords;
+
+        // 3순위: 색상 기반 SVG (크기 필터만, 위치는 프레임 내 좌표라 제한 없음)
+        for (const el of document.querySelectorAll('rect, circle, path')) {
+          if (el.closest('button, a, [role="button"]')) continue;
+          const attrFill = el.getAttribute('fill');
+          const fill = (attrFill && attrFill !== 'none') ? attrFill : (window.getComputedStyle(el).fill || '');
+          if (isUnavailableColor(fill)) continue;
+          const cls = ((el.className?.baseVal || el.className) + '').toLowerCase();
+          if (cls.includes('disabled') || cls.includes('sold') || cls.includes('bg') || cls.includes('background')) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width >= 3 && r.width <= 40 && r.height >= 3)
+            coords.push({ x: r.left + r.width / 2, y: r.top + r.height / 2, label: '' });
+        }
+        return coords;
+      }).catch(() => []);
+
+      if (found.length === 0) continue;
+
+      // iframe이면 좌표에 iframe 오프셋 추가
+      if (frame !== page.mainFrame()) {
+        const iframeIdx = allFrames.indexOf(frame);
+        const offset = await page.evaluate((idx) => {
+          const iframes = document.querySelectorAll('iframe');
+          const f = iframes[idx - 1]; // mainFrame이 0번이므로 -1
+          if (!f) return { left: 0, top: 0 };
+          const r = f.getBoundingClientRect();
+          return { left: r.left, top: r.top };
+        }, iframeIdx).catch(() => ({ left: 0, top: 0 }));
+        log(`   📄 iframe[${iframeIdx}] 좌석 감지, 오프셋 (+${Math.round(offset.left)}, +${Math.round(offset.top)})`);
+        seatCoords = found.map(c => ({ x: c.x + offset.left, y: c.y + offset.top, label: c.label }));
+      } else {
+        seatCoords = found;
       }
-      return coords;
-    }, ticketCount - clicked);
+    }
 
     if (seatCoords.length === 0) {
-      log(`   ⚠️  좌석 요소 미감지 (${attempt + 1}번째 시도) → 재시도`);
+      log(`   ⚠️  좌석 미감지 (${attempt + 1}번째) → 재시도`);
       continue;
     }
+
     for (const { x, y, label } of seatCoords.slice(0, ticketCount - clicked)) {
       log(`   🪑 좌석 클릭 ${clicked + 1}/${ticketCount} @ (${Math.round(x)}, ${Math.round(y)})${label ? ' [' + label + ']' : ''}`);
       await page.mouse.click(x, y);
