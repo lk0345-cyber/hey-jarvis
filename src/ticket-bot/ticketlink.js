@@ -264,43 +264,38 @@ async function pollAndClickBookingButton(page, targetDate) {
   log('⚡ 예매하기 버튼 폴링 시작 (100ms 간격)...');
 
   for (let attempt = 0; attempt < 300; attempt++) {
-    // 매 10회마다 새로고침 (트래픽 고려해 너무 자주 하지 않음)
     if (attempt > 0 && attempt % 10 === 0) {
       await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
     }
 
-    // 버튼 좌표를 추출한 뒤 실제 마우스 이벤트로 클릭 (isTrusted: true → NetFunnel 우회)
-    const coords = await page.evaluate(({ venue, date }) => {
-      const rows = document.querySelectorAll('li, tr, [class*="schedule"], [class*="item"]');
-      for (const row of rows) {
-        const text = row.textContent || '';
-        if (!text.includes(venue)) continue;
-        if (date && !text.includes(date)) continue;
+    try {
+      // 날짜·장소를 포함한 행에서 예매하기 버튼 탐색
+      const btn = page.locator('li, tr')
+        .filter({ hasText: targetDate })
+        .filter({ hasText: VENUE_NAME })
+        .locator('a:has-text("예매하기"), button:has-text("예매하기")')
+        .first();
 
-        const btns = row.querySelectorAll('button, a');
-        for (const btn of btns) {
-          const btnText = btn.textContent?.trim() || '';
-          if (!btnText.includes('예매하기')) continue;
-          if (btn.disabled || btn.classList.contains('disabled')) continue;
-          if (btnText.includes('오픈') || btnText.includes('예정')) continue;
-          const rect = btn.getBoundingClientRect();
-          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-        }
-      }
-      return null;
-    }, { venue: VENUE_NAME, date: targetDate });
+      const visible = await btn.isVisible().catch(() => false);
+      if (!visible) { await sleep(100); continue; }
 
-    if (coords) {
-      // waitForNavigation을 클릭과 동시에 시작 → 예매 페이지 로드 완료 후 리턴
+      const disabled = await btn.isDisabled().catch(() => false);
+      if (disabled) { await sleep(100); continue; }
+
+      const text = await btn.textContent().catch(() => '');
+      if (text.includes('오픈') || text.includes('예정')) { await sleep(100); continue; }
+
+      // 요소가 뷰포트 안에 오도록 스크롤 후 클릭
+      await btn.scrollIntoViewIfNeeded();
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
-        page.mouse.click(coords.x, coords.y),
+        btn.click(),
       ]);
       log(`✅ 예매하기 클릭 성공 (${attempt + 1}번째 시도)`);
       return;
+    } catch {
+      await sleep(100);
     }
-
-    await sleep(100);
   }
 
   throw new Error('30초 내 예매하기 버튼 활성화 실패');
