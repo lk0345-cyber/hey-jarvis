@@ -701,7 +701,7 @@ async function runTicketBot(config) {
     window.confirm = () => true;
   });
 
-  const page = await context.newPage();
+  let page = await context.newPage();
 
   page.on('dialog', async (dialog) => {
     try { await dialog.accept(); } catch { /* ignore */ }
@@ -720,12 +720,22 @@ async function runTicketBot(config) {
   try {
     await login(page, config);
     await enterReservePage(page, config); // 예매안내 팝업 처리 포함
-    // 예매 페이지 이동 완료 대기
-    log('🔄 예매 페이지 이동 대기 중...');
-    await page.waitForURL('**/reserve/**', { timeout: 20000 })
-      .then(() => log('✅ 예매 페이지 이동 완료'))
-      .catch(() => log('⚠️  예매 페이지 URL 감지 실패 → 계속 진행'));
-    // 대기열 처리 (정시 오픈 때 최대 10분)
+
+    // 새 탭으로 예매 페이지가 열렸는지 확인 (팝업 확인 클릭 후 최대 5초 대기)
+    for (let i = 0; i < 10; i++) {
+      const reserveTab = context.pages().find(p => p.url().includes('/reserve/'));
+      if (reserveTab) {
+        if (reserveTab !== page) {
+          log(`📄 예매 탭 감지 → 전환`);
+          page = reserveTab;
+        }
+        break;
+      }
+      await sleep(500);
+    }
+    log(`📍 예매 탭 URL: ${page.url()}`);
+
+    // 대기열 처리
     await handleQueueIfAppears(page, 5000);
     await waitForCaptchaDone(page);
     await selectSeat(page, config);
