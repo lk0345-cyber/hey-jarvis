@@ -270,7 +270,8 @@ async function pollAndClickBookingButton(page, targetDate) {
       await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
     }
 
-    const clicked = await page.evaluate(({ venue, date }) => {
+    // 버튼 좌표를 추출한 뒤 실제 마우스 이벤트로 클릭 (isTrusted: true → NetFunnel 우회)
+    const coords = await page.evaluate(({ venue, date }) => {
       const rows = document.querySelectorAll('li, tr, [class*="schedule"], [class*="item"]');
       for (const row of rows) {
         const text = row.textContent || '';
@@ -282,16 +283,17 @@ async function pollAndClickBookingButton(page, targetDate) {
           const btnText = btn.textContent?.trim() || '';
           if (!btnText.includes('예매하기')) continue;
           if (btn.disabled || btn.classList.contains('disabled')) continue;
-          // 오픈예정 텍스트가 있으면 스킵
           if (btnText.includes('오픈') || btnText.includes('예정')) continue;
-          btn.click();
-          return true;
+          const rect = btn.getBoundingClientRect();
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
         }
       }
-      return false;
+      return null;
     }, { venue: VENUE_NAME, date: targetDate });
 
-    if (clicked) {
+    if (coords) {
+      // 실제 마우스 클릭 → isTrusted: true 이벤트 → NetFunnel 세션 정상 초기화
+      await page.mouse.click(coords.x, coords.y);
       log(`✅ 예매하기 클릭 성공 (${attempt + 1}번째 시도)`);
       return;
     }
@@ -306,16 +308,20 @@ async function pollAndClickBookingButton(page, targetDate) {
 // 팝업 확인 버튼 공통 처리
 // ─────────────────────────────────────────────
 
-async function handleConfirmPopup(page, label = '', timeout = 5000) {
+async function handleConfirmPopup(page, label = '', timeout = 8000) {
   try {
     await page.waitForSelector('.modal, [role="dialog"], .popup, [class*="modal"]', { timeout });
     const confirmBtn = page.locator('button:has-text("확인")');
-    if (await confirmBtn.count() > 0) {
+    const count = await confirmBtn.count();
+    if (count > 0) {
       log(`📋 팝업 처리${label ? ` [${label}]` : ''}...`);
-      await confirmBtn.last().click();
-      await sleep(400);
+      await confirmBtn.last().click({ force: true });
+      await sleep(600);
+      log(`✅ 팝업 확인 클릭 완료${label ? ` [${label}]` : ''}`);
     }
-  } catch { /* 팝업 없음 */ }
+  } catch (e) {
+    log(`⚠️  팝업 처리 실패${label ? ` [${label}]` : ''}: ${e.message}`);
+  }
 }
 
 // ─────────────────────────────────────────────
