@@ -633,106 +633,75 @@ async function handleSeatTypePopup(page, targetGrade) {
 async function clickAvailableSeats(page, ticketCount) {
   log(`🪑 사용 가능한 좌석 ${ticketCount}장 선택 중...`);
 
-  // ── 1회만 실행: DOM 구조 디버그 ──
-  const dbg = await page.evaluate(() => ({
-    iframes:  document.querySelectorAll('iframe').length,
-    rects:    document.querySelectorAll('rect').length,
-    circles:  document.querySelectorAll('circle').length,
-    titles:   document.querySelectorAll('title').length,
-    rowTitles: [...document.querySelectorAll('title')].filter(t => t.textContent.includes('열')).length,
-    firstRect: (() => {
-      for (const el of document.querySelectorAll('rect, circle')) {
-        const f = el.getAttribute('fill') || '';
-        const r = el.getBoundingClientRect();
-        if (r.width > 0) return `fill="${f}" @(${Math.round(r.left)},${Math.round(r.top)}) ${Math.round(r.width)}x${Math.round(r.height)}`;
-      }
-      return 'none';
-    })(),
-  })).catch(() => ({}));
-  log(`   📊 DOM: iframe=${dbg.iframes}, rect=${dbg.rects}, circle=${dbg.circles}, title(열)=${dbg.rowTitles}/${dbg.titles}`);
-  log(`   📊 첫번째요소: ${dbg.firstRect}`);
-
-  // ── 탐색 대상 프레임 결정 (메인 + 모든 iframe) ──
-  const allFrames = page.frames();
-  if (allFrames.length > 1) log(`   📊 프레임 수: ${allFrames.length} (iframe 존재)`);
-
   let clicked = 0;
 
   for (let attempt = 0; attempt < 5 && clicked < ticketCount; attempt++) {
     if (attempt > 0) await sleep(800);
 
-    let seatCoords = [];
+    // Canvas 픽셀 분석으로 색상 좌석 좌표 추출
+    const seatCoords = await page.evaluate((needed) => {
+      // ── Canvas 픽셀 기반 탐색 ──
+      const canvases = [...document.querySelectorAll('canvas')]
+        .filter(c => { const r = c.getBoundingClientRect(); return r.width > 100 && r.height > 100; });
 
-    for (const frame of allFrames) {
-      if (seatCoords.length > 0) break;
+      for (const canvas of canvases) {
+        const ctx = canvas.getContext('2d');
+        if (!ctx) continue;
+        const rect = canvas.getBoundingClientRect();
+        let imgData;
+        try { imgData = ctx.getImageData(0, 0, canvas.width, canvas.height); }
+        catch { continue; } // tainted canvas
 
-      const found = await frame.evaluate(() => {
-        function isUnavailableColor(fill) {
-          if (!fill || fill === 'none' || fill === 'transparent') return true;
-          const f = fill.toLowerCase().trim();
-          if (f === 'white' || f === '#fff' || f === '#ffffff') return true;
-          if (/^#[c-f][c-f][c-f]/i.test(f)) return true;
-          if (/^#[89ab][89ab][89ab]/i.test(f)) return true;
-          const rgb = f.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-          if (rgb && +rgb[1] > 160 && +rgb[2] > 160 && +rgb[3] > 160) return true;
-          return false;
+        const d = imgData.data;
+        const W = canvas.width;
+        const H = canvas.height;
+        const sx = rect.width / W;   // canvas→page 스케일
+        const sy = rect.height / H;
+
+        // 색상 픽셀(선택가능 좌석) 탐색: 적색이 강하고 녹/청이 낮은 마룬/브라운 계열
+        const colored = [];
+        for (let y = 4; y < H - 4; y += 3) {
+          for (let x = 4; x < W - 4; x += 3) {
+            const i = (y * W + x) * 4;
+            const r = d[i], g = d[i+1], b = d[i+2], a = d[i+3];
+            if (a < 180) continue;
+            // 회색/흰색 제외
+            if (r > 190 && g > 190 && b > 190) continue;
+            if (Math.abs(r-g) < 18 && Math.abs(g-b) < 18 && Math.abs(r-b) < 18) continue;
+            // 갈색/배경 추가 제외: g와 b가 비슷하고 r이 중간값
+            if (r < 180 && g < 120 && b < 120 && r > g && r > b) {
+              // 적색 계열 → 좌석 후보
+              const px = rect.left + x * sx;
+              const py = rect.top + y * sy;
+              colored.push({ x: px, y: py });
+            }
+          }
         }
 
-        const coords = [];
-
-        // 1순위: SVG <title>에 "열" 포함 = 좌석 메타데이터
-        for (const titleEl of document.querySelectorAll('title')) {
-          const txt = titleEl.textContent || '';
-          if (!txt.includes('열')) continue;
-          const seat = titleEl.parentElement;
-          if (!seat) continue;
-          const r = seat.getBoundingClientRect();
-          if (r.width >= 2 && r.width <= 60 && r.height >= 2)
-            coords.push({ x: r.left + r.width / 2, y: r.top + r.height / 2, label: txt.trim() });
+        // 클러스터링: 가까운 픽셀들을 하나의 좌석으로
+        const seats = [];
+        const gap = 12;
+        for (const p of colored) {
+          if (!seats.some(s => Math.abs(s.x - p.x) < gap && Math.abs(s.y - p.y) < gap))
+            seats.push(p);
+          if (seats.length >= needed * 3) break; // 충분하면 중단
         }
-        if (coords.length > 0) return coords;
-
-        // 2순위: data-* 속성에 좌석 정보
-        for (const el of document.querySelectorAll('[data-seatno],[data-seat-no],[data-seat],[data-row],[data-col]')) {
-          const r = el.getBoundingClientRect();
-          if (r.width >= 2 && r.width <= 60 && r.height >= 2)
-            coords.push({ x: r.left + r.width / 2, y: r.top + r.height / 2, label: el.dataset.seatno || '' });
-        }
-        if (coords.length > 0) return coords;
-
-        // 3순위: 색상 기반 SVG (크기 필터만, 위치는 프레임 내 좌표라 제한 없음)
-        for (const el of document.querySelectorAll('rect, circle, path')) {
-          if (el.closest('button, a, [role="button"]')) continue;
-          const attrFill = el.getAttribute('fill');
-          const fill = (attrFill && attrFill !== 'none') ? attrFill : (window.getComputedStyle(el).fill || '');
-          if (isUnavailableColor(fill)) continue;
-          const cls = ((el.className?.baseVal || el.className) + '').toLowerCase();
-          if (cls.includes('disabled') || cls.includes('sold') || cls.includes('bg') || cls.includes('background')) continue;
-          const r = el.getBoundingClientRect();
-          if (r.width >= 3 && r.width <= 40 && r.height >= 3)
-            coords.push({ x: r.left + r.width / 2, y: r.top + r.height / 2, label: '' });
-        }
-        return coords;
-      }).catch(() => []);
-
-      if (found.length === 0) continue;
-
-      // iframe이면 좌표에 iframe 오프셋 추가
-      if (frame !== page.mainFrame()) {
-        const iframeIdx = allFrames.indexOf(frame);
-        const offset = await page.evaluate((idx) => {
-          const iframes = document.querySelectorAll('iframe');
-          const f = iframes[idx - 1]; // mainFrame이 0번이므로 -1
-          if (!f) return { left: 0, top: 0 };
-          const r = f.getBoundingClientRect();
-          return { left: r.left, top: r.top };
-        }, iframeIdx).catch(() => ({ left: 0, top: 0 }));
-        log(`   📄 iframe[${iframeIdx}] 좌석 감지, 오프셋 (+${Math.round(offset.left)}, +${Math.round(offset.top)})`);
-        seatCoords = found.map(c => ({ x: c.x + offset.left, y: c.y + offset.top, label: c.label }));
-      } else {
-        seatCoords = found;
+        if (seats.length > 0) return seats.slice(0, needed).map(s => ({ ...s, label: 'canvas' }));
       }
-    }
+
+      // ── 폴백: DOM 기반 탐색 ──
+      const coords = [];
+      for (const titleEl of document.querySelectorAll('title')) {
+        const txt = titleEl.textContent || '';
+        if (!txt.includes('열')) continue;
+        const seat = titleEl.parentElement;
+        if (!seat) continue;
+        const r = seat.getBoundingClientRect();
+        if (r.width >= 2 && r.width <= 60)
+          coords.push({ x: r.left + r.width/2, y: r.top + r.height/2, label: txt.trim() });
+      }
+      return coords.slice(0, needed);
+    }, ticketCount - clicked);
 
     if (seatCoords.length === 0) {
       log(`   ⚠️  좌석 미감지 (${attempt + 1}번째) → 재시도`);
