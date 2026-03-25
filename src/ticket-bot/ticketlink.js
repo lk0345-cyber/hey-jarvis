@@ -548,17 +548,57 @@ async function selectBestSubSection(page, ticketCount) {
 
   log(`   → "${best.name}" 선택 (${best.count}석 가용)`);
   await page.mouse.click(best.x, best.y);
+  await sleep(1500);
 
-  // 지도 줌인 후 개별 좌석(소형 SVG 요소)이 나타날 때까지 대기
-  await page.waitForFunction(() => {
-    const smalls = Array.from(document.querySelectorAll('rect, circle, path')).filter(el => {
-      const r = el.getBoundingClientRect();
-      return r.width >= 3 && r.width <= 25 && r.height >= 3;
+  // 지도 새로고침 버튼 2회 클릭 (좌석 색상 강제 렌더링)
+  const refreshed = await page.evaluate(() => {
+    // 지도 영역 내 버튼 중 마지막 것(새로고침)을 찾기
+    // 또는 SVG path가 하나뿐인 작은 버튼
+    const mapArea = document.querySelector('[class*="map"], [class*="seat_map"], [class*="seatMap"], svg')?.closest('div') || document.body;
+    const btns = Array.from(mapArea.querySelectorAll('button')).filter(b => {
+      const r = b.getBoundingClientRect();
+      return r.width > 0 && r.width < 80 && r.height > 0 && r.height < 80;
     });
-    return smalls.length > 5;
-  }, null, { timeout: 8000 }).catch(() => {});
+    if (btns.length === 0) return false;
+    // 새로고침 버튼은 보통 마지막 컨트롤 버튼
+    const refreshBtn = btns[btns.length - 1];
+    const r = refreshBtn.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  });
+
+  if (refreshed) {
+    log('   🔄 지도 새로고침 1회...');
+    await page.mouse.click(refreshed.x, refreshed.y);
+    await sleep(1200);
+    log('   🔄 지도 새로고침 2회...');
+    await page.mouse.click(refreshed.x, refreshed.y);
+    await sleep(1200);
+  } else {
+    log('   ⚠️  새로고침 버튼 미감지 → 스킵');
+  }
+
+  // 좌석 색상이 나타날 때까지 대기 (최대 10초)
+  await page.waitForFunction(() => {
+    function isUnavailableColor(fill) {
+      if (!fill || fill === 'none' || fill === 'transparent') return true;
+      const f = fill.toLowerCase().trim();
+      if (f === 'white' || f === '#fff' || f === '#ffffff') return true;
+      if (/^#[c-f][c-f][c-f]/i.test(f)) return true;
+      if (/^#[89ab][89ab][89ab]/i.test(f)) return true;
+      const rgb = f.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+      if (rgb && +rgb[1] > 160 && +rgb[2] > 160 && +rgb[3] > 160) return true;
+      return false;
+    }
+    return Array.from(document.querySelectorAll('rect, circle, path')).some(el => {
+      const attrFill = el.getAttribute('fill');
+      const fill = (attrFill && attrFill !== 'none') ? attrFill : (window.getComputedStyle(el).fill || '');
+      if (isUnavailableColor(fill)) return false;
+      const r = el.getBoundingClientRect();
+      return r.width >= 3 && r.width <= 40;
+    });
+  }, null, { timeout: 10000 }).catch(() => {});
   log('   좌석 상세 뷰 로드 완료');
-  await sleep(500);
+  await sleep(300);
 }
 
 // ─────────────────────────────────────────────
