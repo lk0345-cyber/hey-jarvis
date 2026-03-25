@@ -164,14 +164,18 @@ async function waitForOpenTime(openTimeStr) {
   const target = new Date(now);
   target.setHours(h, m, s, 0);
 
-  // 페이지 로딩 선행: 목표 시각 OPEN_LEAD_MS 전에 폴링 시작
-  const waitMs = target.getTime() - now.getTime() - OPEN_LEAD_MS;
-  if (waitMs <= 0) {
-    log('⚡ 오픈 시간이 이미 지났습니다. 바로 진행합니다.');
-    return;
+  // 오늘 목표 시각이 이미 지났으면 내일로 설정
+  if (target.getTime() - OPEN_LEAD_MS <= now.getTime()) {
+    target.setDate(target.getDate() + 1);
   }
 
-  log(`⏱  오픈까지 ${Math.round((waitMs + OPEN_LEAD_MS) / 1000)}초 대기 → ${openTimeStr} 기준 ${OPEN_LEAD_MS / 1000}초 선행 시작`);
+  // 페이지 로딩 선행: 목표 시각 OPEN_LEAD_MS 전에 폴링 시작
+  const waitMs = target.getTime() - now.getTime() - OPEN_LEAD_MS;
+
+  const hh = String(target.getHours()).padStart(2,'0');
+  const mm = String(target.getMinutes()).padStart(2,'0');
+  const dd = `${target.getMonth()+1}/${target.getDate()}`;
+  log(`⏱  오픈까지 ${Math.round((waitMs + OPEN_LEAD_MS) / 1000)}초 대기 → ${dd} ${hh}:${mm} 기준 ${OPEN_LEAD_MS / 1000}초 선행 시작`);
 
   if (waitMs > 31000) await sleep(waitMs - 30000);
 
