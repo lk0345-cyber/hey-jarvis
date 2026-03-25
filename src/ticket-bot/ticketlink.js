@@ -294,6 +294,8 @@ async function pollAndClickBookingButton(page, targetDate) {
       // 실제 마우스 클릭 → isTrusted: true 이벤트 → NetFunnel 세션 정상 초기화
       await page.mouse.click(coords.x, coords.y);
       log(`✅ 예매하기 클릭 성공 (${attempt + 1}번째 시도)`);
+      // 페이지 이동 시작될 때까지 대기 (최대 5초)
+      await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
       return;
     }
 
