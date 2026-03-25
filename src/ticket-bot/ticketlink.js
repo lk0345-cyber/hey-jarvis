@@ -311,7 +311,16 @@ async function handleConfirmPopup(page, label = '', timeout = 10000) {
 
   while (Date.now() < deadline) {
     try {
-      // button/a 우선 탐색 → span/div 폴백 (컨테이너 div 대신 실제 버튼 탐색)
+      // 팝업 HTML 구조 1회 덤프 (디버깅용)
+      if (clickCount === 0) {
+        const modalHtml = await page.evaluate(() => {
+          const m = document.querySelector('.common_modal_footer, [class*="layer_pop"] [class*="footer"], [class*="modal"] [class*="footer"]');
+          return m?.parentElement?.outerHTML?.substring(0, 3000) ?? null;
+        }).catch(() => null);
+        if (modalHtml) log(`📄 팝업 구조:\n${modalHtml}`);
+      }
+
+      // common_modal_close(닫기 전용) 제외하고 확인 버튼 탐색
       const btnInfo = await page.evaluate(() => {
         function getMaxZ(el) {
           let maxZ = 0;
@@ -323,8 +332,15 @@ async function handleConfirmPopup(page, label = '', timeout = 10000) {
           }
           return maxZ;
         }
-        // 1순위: button/a  2순위: span/div
-        for (const sel of ['button, a', 'span, div, p, li']) {
+        // 1순위: footer 안의 button/a (close 제외)
+        // 2순위: 뷰포트 내 확인 텍스트 button/a (close 제외)
+        // 3순위: span/div (close 제외)
+        const selGroups = [
+          '.common_modal_footer button:not(.common_modal_close), .common_modal_footer a:not(.common_modal_close)',
+          'button:not(.common_modal_close), a:not(.common_modal_close)',
+          'span:not(.common_modal_close), div:not(.common_modal_close)',
+        ];
+        for (const sel of selGroups) {
           let best = null;
           let bestZ = -1;
           for (const el of document.querySelectorAll(sel)) {
