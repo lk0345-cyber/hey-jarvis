@@ -698,80 +698,84 @@ async function findSeatsByScreenshot(page, needed) {
   if (clusters.length === 0) return [];
 
   // 클러스터 필터링:
-  // - n < 3: 노이즈 제거
-  // - n > 120: 너무 큰 덩어리 = 범례/UI 요소 (좌석 한 칸은 보통 n=5~80)
-  const validClusters = clusters.filter(c => c.n >= 3 && c.n <= 120);
-  const fallback = clusters.filter(c => c.n >= 3);  // 폴백용
+  // - n < 3: 노이즈
+  // - n > 100: 너무 큰 덩어리 = 구역 헤더/경계선 (실제 좌석 한 칸은 n=5~80)
+  // - cy < yMin+30: 스캔 상단 경계 근처 = 구역 경계선 (가장 상단 채색 영역)
+  const EDGE_MARGIN = 30;
+  const validClusters = clusters.filter(c => c.n >= 3 && c.n <= 100 && c.cy >= yMin + EDGE_MARGIN);
+  const fallback = clusters.filter(c => c.n >= 3 && c.cy >= yMin + EDGE_MARGIN);
+  const fallback2 = clusters.filter(c => c.n >= 3);
 
-  const pool = validClusters.length > 0 ? validClusters : fallback;
-  log(`   📸 전체클러스터=${clusters.length} 유효(3≤n≤120)=${validClusters.length}`);
+  const pool = validClusters.length > 0 ? validClusters
+             : fallback.length > 0 ? fallback
+             : fallback2;
 
-  // y 위치 오름차순 정렬 (위쪽 좌석 먼저)
+  log(`   📸 전체클러스터=${clusters.length} 유효=${validClusters.length} 폴백=${fallback.length}`);
+
+  // y 오름차순 정렬 (위 → 아래)
   const seats = pool
     .sort((a, b) => a.cy - b.cy || a.cx - b.cx)
-    .slice(0, needed * 4)
+    .slice(0, Math.max(needed * 4, 8))
     .map(c => ({ x: Math.round(c.cx / dpr), y: Math.round(c.cy / dpr), n: c.n }));
 
   log(`   📸 후보: ${seats.slice(0,5).map(s=>`(${s.x},${s.y})n=${s.n}`).join(' ')}`);
   return seats;
 }
 
+// 좌석 클릭 → 다음단계 → URL 변화로 성공 판단
+// 반환값: true=성공(다음 페이지 이동), false=실패
+async function tryClickSeatAndNext(page, x, y, urlBefore) {
+  await page.mouse.click(x, y);
+  await sleep(600);
+
+  const nextBtn = page.locator('button:has-text("다음단계"), a:has-text("다음단계")').first();
+  if (!await nextBtn.isVisible().catch(() => false)) return false;
+
+  await nextBtn.click();
+  // URL 변화 최대 2.5초 대기
+  for (let i = 0; i < 5; i++) {
+    await sleep(500);
+    if (page.url() !== urlBefore) return true;
+  }
+  return false;
+}
+
 async function clickAvailableSeats(page, ticketCount) {
-  log(`🪑 사용 가능한 좌석 ${ticketCount}장 선택 중...`);
+  log(`🪑 좌석 ${ticketCount}장 선택 중...`);
 
-  let clicked = 0;
+  const urlBefore = page.url();
 
-  for (let attempt = 0; attempt < 5 && clicked < ticketCount; attempt++) {
-    if (attempt > 0) await sleep(1000);
+  // 디버그 스크린샷 저장
+  await page.screenshot({ path: `${require('os').homedir()}/Desktop/seat-before.png` }).catch(() => {});
 
-    const seats = await findSeatsByScreenshot(page, ticketCount - clicked);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await sleep(800);
 
-    if (seats.length === 0) {
-      log(`   ⚠️  좌석 미감지 (${attempt + 1}번째) → 재시도`);
+    const candidates = await findSeatsByScreenshot(page, ticketCount * 4);
+    if (candidates.length === 0) {
+      log(`   ⚠️  좌석 후보 없음 (${attempt + 1}번째)`);
       continue;
     }
 
-    // 디버그 스크린샷 저장 (클릭 전)
-    await page.screenshot({ path: `${require('os').homedir()}/Desktop/seat-before.png` }).catch(() => {});
+    log(`   후보 ${candidates.length}개: ${candidates.slice(0,6).map(s=>`(${s.x},${s.y})n=${s.n}`).join(' ')}`);
 
-    for (const { x, y } of seats.slice(0, ticketCount - clicked)) {
-      log(`   🪑 좌석 클릭 ${clicked + 1}/${ticketCount} @ (${Math.round(x)}, ${Math.round(y)})`);
-      await page.mouse.click(x, y);
-      await sleep(1000);
-      clicked++;
-
-      // 클릭 후 스크린샷 저장 (클릭 후 상태 확인용)
-      await page.screenshot({ path: `${require('os').homedir()}/Desktop/seat-after.png` }).catch(() => {});
-
-      // 클릭 후 좌석 선택 확인
-      const sel = await page.evaluate(() => {
-        const txt = document.body?.innerText || '';
-        const m = txt.match(/선택\s*(\d+)\s*석/) || txt.match(/(\d+)\s*석\s*선택/);
-        if (m) return parseInt(m[1]);
-        // 대안: 우측 패널의 좌석 수 표시 탐색
-        for (const el of document.querySelectorAll('span, p, div, li')) {
-          if (el.children.length > 3) continue;
-          const t = (el.textContent || '').trim();
-          if (/^[1-9]\s*\/\s*\d+\s*석$/.test(t)) return 1; // "1/1석" 형태
-          if (/선택.*[1-9]/.test(t)) return 1;
-        }
-        return -1;
-      }).catch(() => -1);
-      if (sel > 0) {
-        log(`   ✅ 좌석 선택 확인`);
-        break;
+    // 각 후보 좌표 순서대로 시도 → 다음단계 URL 변화로 성공 판정
+    for (const { x, y, n } of candidates) {
+      log(`   🪑 시도 @ (${x}, ${y}) n=${n}`);
+      const ok = await tryClickSeatAndNext(page, x, y, urlBefore);
+      if (ok) {
+        await page.screenshot({ path: `${require('os').homedir()}/Desktop/seat-after.png` }).catch(() => {});
+        log(`   ✅ 좌석 선택 & 다음단계 이동 성공! → ${page.url().split('?')[0].split('/').slice(-2).join('/')}`);
+        return true;
       }
-      log(`   ⚠️  선택 텍스트 미감지 (클릭은 완료, ~/Desktop/seat-after.png 확인)`);
+      log(`   ↩️  URL 변화 없음 → 다음 후보 시도`);
+      await sleep(200);
     }
   }
 
-  if (clicked === 0) {
-    log('⚠️  자동 좌석 클릭 실패. 직접 선택해주세요.');
-  } else {
-    log(`✅ 좌석 ${clicked}/${ticketCount}장 클릭 완료`);
-  }
-
-  await sleep(300);
+  await page.screenshot({ path: `${require('os').homedir()}/Desktop/seat-after.png` }).catch(() => {});
+  log('⚠️  모든 후보 시도 후 실패. seat-before/after.png (~/Desktop) 확인 후 직접 선택해주세요.');
+  return false;
 }
 
 // ─────────────────────────────────────────────
@@ -796,47 +800,10 @@ async function selectSeat(page, config) {
   await clickTargetGradeInPanel(page, targetGrade);
   await selectBestSubSection(page, ticketCount);
   await handleSeatTypePopup(page, targetGrade);
-  await clickAvailableSeats(page, ticketCount);
 
-  // 좌석 선택 여부 확인
-  const selectedCount = await page.evaluate(() => {
-    const txt = document.body?.innerText || '';
-    const m = txt.match(/선택\s*(\d+)\s*석/) || txt.match(/(\d+)\s*석\s*선택/);
-    if (m) return parseInt(m[1]);
-    return document.querySelectorAll('[class*="selected"], [class*="Selected"], [class*="active-seat"]').length;
-  }).catch(() => 0);
-
-  if (selectedCount === 0) {
-    log('⚠️  좌석 선택 미확인 → 다음단계 버튼 시도 (좌석 선택 됐을 수 있음)');
-  } else {
-    log(`✅ 좌석 ${selectedCount}석 선택 확인`);
-  }
-
-  // 다음단계 버튼 클릭 + 실제 페이지 이동 확인
-  const nextBtn = page.locator('button:has-text("다음단계"), a:has-text("다음단계")').first();
-  const nextVisible = await nextBtn.isVisible().catch(() => false);
-  if (!nextVisible) {
-    log('⚠️  다음단계 버튼 미노출. 직접 좌석 클릭 후 진행해주세요.');
-    return;
-  }
-
-  const urlBefore = page.url();
-  log('➡️  다음단계 클릭...');
-  await nextBtn.click();
-
-  // 최대 5초 URL 변화 대기 (실제 페이지 이동 확인)
-  let navigated = false;
-  for (let i = 0; i < 10; i++) {
-    await sleep(500);
-    if (page.url() !== urlBefore) { navigated = true; break; }
-  }
-
-  if (navigated) {
-    log(`🎉 다음 단계 이동 성공! → ${page.url().split('?')[0].split('/').slice(-2).join('/')}`);
-    log('🎉 이후 단계(권종/배송/결제)를 진행해주세요.');
-  } else {
-    log('⚠️  URL 변화 없음 → 좌석이 실제로 선택되지 않았을 수 있습니다.');
-    log('   seat-before.png / seat-after.png (~/Desktop) 를 확인해주세요.');
+  const success = await clickAvailableSeats(page, ticketCount);
+  if (success) {
+    log('🎉 좌석 선택 & 다음단계 완료! 이후 단계(권종/배송/결제)를 진행해주세요.');
   }
 }
 
