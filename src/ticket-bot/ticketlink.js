@@ -69,17 +69,42 @@ async function login(page, config) {
   await paycoPopup.locator('input[placeholder*="비밀번호"], input[name="pw"], input[type="password"]').fill(config.paycoPw);
   await paycoPopup.locator('button:has-text("로그인"), .btn_login').first().click();
 
-  // 새 기기 인증 (PAYCO OTP — 사용자가 직접 입력)
-  try {
-    await paycoPopup.waitForSelector('text=새로운 기기', { timeout: 6000 });
-    log('📲 새 기기 인증 팝업 감지!');
-    log('   ✋ 브라우저에서 인증번호를 직접 입력 후 확인을 눌러주세요.');
-    log('   ⏳ 최대 120초 대기...');
-    // 팝업이 닫힐 때까지 대기 (사용자가 직접 인증번호 입력)
-    await paycoPopup.waitForEvent('close', { timeout: 120000 }).catch(() => {});
-    log('   ✅ 인증 완료');
-    return; // 이미 팝업 닫혔으므로 아래 close() 불필요
-  } catch { /* 인증 팝업 없음 */ }
+  // 본인인증 약관 동의 / 새 기기 인증 — 새 탭 또는 팝업으로 열릴 수 있음
+  // 최대 120초 동안 id.payco.com/certificate 탭이 닫힐 때까지 대기
+  for (let i = 0; i < 120; i++) {
+    await sleep(1000);
+
+    // 새 탭에서 약관 동의 또는 기기 인증 탐색
+    const certTab = page.context().pages().find(p =>
+      p.url().includes('certificate') || p.url().includes('payco.com/cert')
+    );
+    if (certTab && !certTab.isClosed()) {
+      const txt = await certTab.evaluate(() => document.body?.innerText || '').catch(() => '');
+      if (txt.includes('약관에 동의') || txt.includes('새로운 기기') || txt.includes('본인 인증')) {
+        if (i === 0 || i % 10 === 0) {
+          log(`📋 인증 탭 감지 (${certTab.url().split('/')[2]})`);
+          log('   ✋ 브라우저에서 약관 동의 / 인증번호 입력 후 확인을 눌러주세요.');
+          log('   ⏳ 탭이 닫힐 때까지 대기 중...');
+        }
+        continue; // 탭 아직 열려있음 → 계속 대기
+      }
+    }
+
+    // paycoPopup 내 약관/인증 확인
+    if (!paycoPopup.isClosed()) {
+      const txt = await paycoPopup.evaluate(() => document.body?.innerText || '').catch(() => '');
+      if (txt.includes('약관에 동의') || txt.includes('새로운 기기')) {
+        if (i === 0 || i % 10 === 0) {
+          log('📋 PAYCO 팝업 인증 감지 — 브라우저에서 직접 처리해주세요.');
+        }
+        continue;
+      }
+    }
+
+    // 인증 탭/팝업 없음 → 로그인 완료로 간주
+    break;
+  }
+  log('   ✅ 인증 단계 완료');
 
   // 팝업 처리 완료 대기 후 강제 정리
   await sleep(3000);
