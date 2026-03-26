@@ -124,7 +124,17 @@ async function login(page, config) {
 
 async function extractScheduleId(page, targetDate) {
   log('🔍 Schedule ID 사전 추출 시도...');
-  await page.goto(SPORTS_PAGE, { waitUntil: 'domcontentloaded' });
+  await page.goto(SPORTS_PAGE, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+
+  // JS 렌더링 대기 — 경기 목록이 나타날 때까지 (최대 10초)
+  await page.waitForFunction(
+    (date) => {
+      const txt = document.body?.innerText || '';
+      return txt.includes(date) || txt.includes('예매하기') || txt.includes('오픈예정') || txt.includes('한화');
+    },
+    targetDate,
+    { timeout: 10000 }
+  ).catch(() => {});
 
   const id = await page.evaluate(({ venue, date }) => {
     // 모든 a/button 요소에서 reserve/plan/schedule URL 탐색
@@ -179,8 +189,10 @@ async function extractScheduleId(page, targetDate) {
 
 // 페이지 로딩 선행 시간 (ms) — 11시 정각보다 이 만큼 먼저 폴링 시작
 const OPEN_LEAD_MS = 3500;
+// 오픈 전 예매 URL 선점 진입 시간 (ms)
+const PRE_ENTER_LEAD_MS = 90000; // 90초 전
 
-async function waitForOpenTime(openTimeStr) {
+async function waitForOpenTime(openTimeStr, leadMs = OPEN_LEAD_MS) {
   if (openTimeStr === 'now') {
     log('⚡ 즉시 예매 모드 — 대기 없이 바로 진행');
     return;
@@ -191,15 +203,14 @@ async function waitForOpenTime(openTimeStr) {
   const target = new Date(now);
   target.setHours(h, m, s, 0);
 
-  // 페이지 로딩 선행: 목표 시각 OPEN_LEAD_MS 전에 폴링 시작
-  const waitMs = target.getTime() - now.getTime() - OPEN_LEAD_MS;
+  const waitMs = target.getTime() - now.getTime() - leadMs;
 
   if (waitMs <= 0) {
-    log('⚡ 오픈 시간이 이미 지났습니다. 바로 진행합니다.');
+    log(`⚡ 오픈 시간이 이미 지났습니다. 바로 진행합니다.`);
     return;
   }
 
-  log(`⏱  오픈까지 ${Math.round((waitMs + OPEN_LEAD_MS) / 1000)}초 대기 → ${openTimeStr} 기준 ${OPEN_LEAD_MS / 1000}초 선행`);
+  log(`⏱  오픈까지 ${Math.round((waitMs + leadMs) / 1000)}초 대기 → ${openTimeStr} 기준 ${leadMs / 1000}초 선행`);
 
   if (waitMs > 31000) await sleep(waitMs - 30000);
 
@@ -211,7 +222,7 @@ async function waitForOpenTime(openTimeStr) {
   }
   await sleep(Math.max(remaining, 0));
   process.stdout.write('\r');
-  log(`🚀 폴링 시작! (${openTimeStr} 기준 ${OPEN_LEAD_MS / 1000}초 선행)`);
+  log(`🚀 진행! (${openTimeStr} 기준 ${leadMs / 1000}초 선행)`);
 }
 
 // ─────────────────────────────────────────────
@@ -263,21 +274,22 @@ async function enterReservePage(page, config) {
 
   if (scheduleId) {
     const reserveUrl = `${RESERVE_BASE}/${scheduleId}?menuIndex=reserve`;
-    log(`🎯 직접 예매 URL로 선접: ${reserveUrl}`);
 
-    // 오픈 30초 전에 미리 페이지 진입 (연결 선점)
-    await waitForOpenTime(openTime);
+    // 오픈 90초 전에 미리 예매 URL 진입 (대기열 + 연결 선점)
+    await waitForOpenTime(openTime, PRE_ENTER_LEAD_MS);
+    log(`🏃 오픈 ${PRE_ENTER_LEAD_MS / 1000}초 전 예매 URL 선점: ${reserveUrl}`);
+    await page.goto(reserveUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    log(`📍 선점 완료: ${page.url().split('?')[0].split('/').slice(-2).join('/')}`);
 
-    // 직접 URL 접근 (트래픽 우회)
-    await page.goto(reserveUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // 오픈 시각 3.5초 전까지 대기 (이미 예매 페이지에 있는 상태)
+    await waitForOpenTime(openTime, OPEN_LEAD_MS);
 
-    // 페이지가 아직 잠겨있으면 오픈 후 새로고침
-    const isLocked = await page.locator('text=예매 가능 시간이 아닙니다, text=오픈 전, text=준비 중').count();
-    if (isLocked > 0) {
-      log('⏳ 페이지 잠김 상태 → 오픈 후 새로고침...');
-      await sleep(500);
-      await page.reload({ waitUntil: 'domcontentloaded' });
-    }
+    // 오픈 직후 새로고침으로 예매 활성화
+    log('🔄 오픈 직후 새로고침...');
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+
+    // 예매안내 팝업 처리 (없으면 자동 통과)
+    await handleConfirmPopup(page, '예매안내', 8000);
   } else {
     // ── 전략 B: 스포츠 페이지 폴링 ───────────────
     log('📍 스포츠 페이지 폴링 전략');
@@ -940,7 +952,7 @@ async function clickAvailableSeats(page, ticketCount) {
     const { x, y, n } = candidates[ci];
     log(`   🪑 좌석 클릭 ${selectedCount + 1}/${ticketCount} @ (${x}, ${y}) n=${n}`);
     await page.mouse.click(x, y);
-    await sleep(1000);
+    await sleep(600);
     const newCount = await getSelectedCount();
     if (newCount > selectedCount) {
       selectedCount = newCount;
