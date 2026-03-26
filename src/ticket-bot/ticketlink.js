@@ -296,6 +296,17 @@ async function enterReservePage(page, config) {
 async function pollAndClickBookingButton(page, targetDate) {
   log('⚡ 예매하기 버튼 폴링 시작...');
 
+  // 경기 목록이 페이지에 실제로 로드될 때까지 대기 (최대 15초)
+  log('   📄 경기 목록 로드 대기...');
+  await page.waitForFunction(
+    (date) => {
+      const txt = document.body?.innerText || '';
+      return txt.includes(date) || txt.includes('대전') || txt.includes('예매하기');
+    },
+    targetDate,
+    { timeout: 15000 }
+  ).catch(() => log('   ⚠️  경기 목록 로드 대기 timeout → 그대로 진행'));
+
   for (let attempt = 0; attempt < 60; attempt++) {
     // 페이지 로드 완료 대기 (새로고침 후 빈 화면 방지)
     await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
