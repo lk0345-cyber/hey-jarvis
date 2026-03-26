@@ -811,10 +811,6 @@ async function clickNextStep(page, urlBefore, shotIndex) {
 
   // 모달/팝업 자동 처리 (DOM 기반 확인창, 경고창 등)
   const popupHandled = await page.evaluate(() => {
-    const txt = document.body?.innerText || '';
-    // 이미 다음 단계로 이동했으면 팝업 처리 불필요
-    if (txt.includes('권종') || txt.includes('배송') || txt.includes('결제수단')) return 'navigated';
-
     // 모달/팝업 버튼 탐색: 확인 / 네 / 선택완료 / 직접선택
     const candidates = Array.from(document.querySelectorAll('button, a[role="button"]'));
     const confirmLabels = ['확인', '네', '선택완료', '직접선택', '계속하기', '진행', 'OK'];
@@ -843,11 +839,6 @@ async function clickNextStep(page, urlBefore, shotIndex) {
       log(`   ✅ URL 변화 감지 → ${page.url().split('/').slice(-2).join('/')}`);
       return true;
     }
-    const moved = await page.evaluate(() => {
-      const txt = document.body?.innerText || '';
-      return txt.includes('권종') || txt.includes('배송') || txt.includes('결제수단');
-    }).catch(() => false);
-    if (moved) { log('   ✅ 페이지 내용 변화 감지 (권종/배송)'); return true; }
     // 새 탭 확인
     const newTab = page.context().pages().find(p => p !== page && !p.isClosed());
     if (newTab && newTab.url() !== 'about:blank') {
@@ -1032,7 +1023,8 @@ async function handlePostSeatFlow(page) {
 
     const isPayment = await page.evaluate(() => {
       const txt = document.body?.innerText || '';
-      return txt.includes('결제수단') || txt.includes('신용카드') || txt.includes('카카오페이') || txt.includes('결제하기');
+      // '결제수단'은 탭 헤더에도 있으므로 제외; 실제 결제 폼 요소만 확인
+      return txt.includes('신용카드') || txt.includes('카카오페이') || txt.includes('결제하기') || txt.includes('토스페이');
     }).catch(() => false);
 
     if (isPayment) {
