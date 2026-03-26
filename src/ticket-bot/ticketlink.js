@@ -293,24 +293,27 @@ async function enterReservePage(page, config) {
 // 폴링 방식 예매하기 클릭 (100ms 간격, 최대 30초)
 // ─────────────────────────────────────────────
 
+async function reloadAndWait(page) {
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+  // 페이지 콘텐츠가 실제로 렌더링될 때까지 대기 (최소 1초, 최대 8초)
+  await page.waitForFunction(
+    () => (document.body?.innerText?.length || 0) > 200,
+    { timeout: 8000 }
+  ).catch(() => {});
+  await sleep(500);
+}
+
 async function pollAndClickBookingButton(page, targetDate) {
   log('⚡ 예매하기 버튼 폴링 시작...');
 
-  // 경기 목록이 페이지에 실제로 로드될 때까지 대기 (최대 15초)
-  log('   📄 경기 목록 로드 대기...');
+  // 초기 페이지 로드 대기
+  await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
   await page.waitForFunction(
-    (date) => {
-      const txt = document.body?.innerText || '';
-      return txt.includes(date) || txt.includes('대전') || txt.includes('예매하기');
-    },
-    targetDate,
-    { timeout: 15000 }
-  ).catch(() => log('   ⚠️  경기 목록 로드 대기 timeout → 그대로 진행'));
+    () => (document.body?.innerText?.length || 0) > 200,
+    { timeout: 10000 }
+  ).catch(() => {});
 
   for (let attempt = 0; attempt < 60; attempt++) {
-    // 페이지 로드 완료 대기 (새로고침 후 빈 화면 방지)
-    await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
-
     // 팝업이 이미 나타났으면 즉시 중단
     const popupVisible = await page.evaluate(() =>
       !!document.querySelector('.common_modal[role="dialog"]')
@@ -329,22 +332,22 @@ async function pollAndClickBookingButton(page, targetDate) {
 
       const visible = await btn.isVisible().catch(() => false);
       if (!visible) {
-        log(`   [${attempt + 1}] 버튼 없음 → 새로고침`);
-        await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+        log(`   [${attempt + 1}] 버튼 없음 → 새로고침 후 대기`);
+        await reloadAndWait(page);
         continue;
       }
 
       const disabled = await btn.isDisabled().catch(() => false);
       const text = await btn.textContent().catch(() => '');
       if (disabled || text.includes('오픈') || text.includes('예정')) {
-        log(`   [${attempt + 1}] 버튼 비활성 → 새로고침`);
-        await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+        log(`   [${attempt + 1}] 버튼 비활성 → 새로고침 후 대기`);
+        await reloadAndWait(page);
         continue;
       }
 
       await btn.scrollIntoViewIfNeeded();
       const box = await btn.boundingBox().catch(() => null);
-      if (!box) { await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {}); continue; }
+      if (!box) { await reloadAndWait(page); continue; }
 
       log(`   [${attempt + 1}] 예매하기 버튼 활성 → 클릭`);
       await page.mouse.move(box.x + box.width / 2 - 120, box.y + box.height / 2 + 40);
@@ -360,9 +363,9 @@ async function pollAndClickBookingButton(page, targetDate) {
         break;
       }
       // 팝업 미감지 → 재시도
-      await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+      await reloadAndWait(page);
     } catch {
-      await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+      await reloadAndWait(page);
     }
   }
 
