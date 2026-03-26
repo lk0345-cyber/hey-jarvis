@@ -886,8 +886,8 @@ async function clickNextStep(page, urlBefore, shotIndex) {
       if (leftSeatPage) { log('   ✅ 좌석선택 페이지 이탈 감지 → 다음 단계로 이동'); return true; }
     }
     // 새 탭 확인
-    const newTab = page.context().pages().find(p => p !== page && !p.isClosed());
-    if (newTab && newTab.url() !== 'about:blank') {
+    const newTab = page.context().pages().find(p => p !== page && !p.isClosed() && p.url().includes('/reserve/'));
+    if (newTab) {
       log(`   📄 새 탭 감지 → ${newTab.url().split('?')[0].split('/').slice(-2).join('/')}`);
       return true;
     }
@@ -1187,7 +1187,7 @@ async function runTicketBot(config) {
 
     // 다음단계 클릭으로 새 탭이 열렸을 수 있음 → 전환 필요
     await sleep(500);
-    const nextStepTab = context.pages().find(p => p !== page && !p.isClosed() && p.url() !== 'about:blank');
+    const nextStepTab = context.pages().find(p => p !== page && !p.isClosed() && p.url().includes('/reserve/'));
     if (nextStepTab) {
       log(`📄 다음단계 새 탭 전환: ${nextStepTab.url().split('?')[0].split('/').slice(-2).join('/')}`);
       page = nextStepTab;
