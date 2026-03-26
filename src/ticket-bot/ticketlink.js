@@ -940,6 +940,44 @@ async function clickAvailableSeats(page, ticketCount) {
   }
   log(`   후보: ${candidates.slice(0, 8).map(s => `(${s.x},${s.y})n=${s.n}`).join(' ')}`);
 
+  // --- 일행 함께 앉기: 같은 행 우선 선택 ---
+  // 1) 후보 좌석을 y 좌표 기준으로 행(row) 그룹화
+  const ROW_TOL = 18; // 같은 행으로 간주할 y 픽셀 허용 오차
+  const rowMap = [];
+  for (const seat of candidates) {
+    const row = rowMap.find(r => Math.abs(r.y - seat.y) <= ROW_TOL);
+    if (row) {
+      row.seats.push(seat);
+      row.y = row.seats.reduce((s, c) => s + c.y, 0) / row.seats.length;
+    } else {
+      rowMap.push({ y: seat.y, seats: [seat] });
+    }
+  }
+  for (const r of rowMap) r.seats.sort((a, b) => a.x - b.x); // 행 내 x 오름차순
+  rowMap.sort((a, b) => a.y - b.y); // 행 y 오름차순 (앞줄 → 뒷줄)
+  log(`   🗺️ 행 분포: ${rowMap.map(r => `y${Math.round(r.y)}(${r.seats.length}석)`).join(' ')}`);
+
+  // 2) 가장 좌석 많은 행 기준으로 선택
+  const bestRow = [...rowMap].sort((a, b) => b.seats.length - a.seats.length)[0];
+  if (bestRow.seats.length >= ticketCount) {
+    // 전략 A: 단일 행으로 충분 → 그 행의 좌석만 사용
+    candidates = bestRow.seats;
+    log(`   ✅ 동일 행 전략 y≈${Math.round(bestRow.y)} (${bestRow.seats.length}석)`);
+  } else {
+    // 전략 B: 가장 좌석 많은 행 기준으로 앞뒤 인접 행 추가
+    const pidx = rowMap.indexOf(bestRow);
+    const selected = [bestRow];
+    let lo = pidx - 1, hi = pidx + 1;
+    while (selected.reduce((s, r) => s + r.seats.length, 0) < ticketCount && (lo >= 0 || hi < rowMap.length)) {
+      const pickLo = lo >= 0 && (hi >= rowMap.length || Math.abs(rowMap[lo].y - bestRow.y) <= Math.abs(rowMap[hi].y - bestRow.y));
+      if (pickLo) { selected.push(rowMap[lo--]); }
+      else if (hi < rowMap.length) { selected.push(rowMap[hi++]); }
+      else break;
+    }
+    candidates = selected.flatMap(r => r.seats).sort((a, b) => a.y - b.y || a.x - b.x);
+    log(`   📐 인접 행 전략 (${selected.length}행, ${candidates.length}석)`);
+  }
+
   // ① ticketCount 만큼 좌석 클릭 — 클릭 후 선택 수 증가 여부 확인
   //    선택 안 됐거나 취소됐으면 다음 후보로 넘어감
   const getSelectedCount = async () => {
