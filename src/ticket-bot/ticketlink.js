@@ -940,9 +940,11 @@ async function clickAvailableSeats(page, ticketCount) {
   }
   log(`   후보: ${candidates.slice(0, 8).map(s => `(${s.x},${s.y})n=${s.n}`).join(' ')}`);
 
-  // --- 일행 함께 앉기: 같은 행 우선 선택 ---
-  // 1) 후보 좌석을 y 좌표 기준으로 행(row) 그룹화
-  const ROW_TOL = 18; // 같은 행으로 간주할 y 픽셀 허용 오차
+  // --- 일행 함께 앉기: 연속 좌석 구간 단위 선택 ---
+  const ROW_TOL = 12;   // 같은 행으로 간주할 y 픽셀 허용 오차
+  const SEAT_GAP = 36;  // 인접 좌석 간 x 픽셀 최대 간격
+
+  // 1) 행 그룹화
   const rowMap = [];
   for (const seat of candidates) {
     const row = rowMap.find(r => Math.abs(r.y - seat.y) <= ROW_TOL);
@@ -953,51 +955,61 @@ async function clickAvailableSeats(page, ticketCount) {
       rowMap.push({ y: seat.y, seats: [seat] });
     }
   }
-  for (const r of rowMap) r.seats.sort((a, b) => a.x - b.x); // 행 내 x 오름차순
-  rowMap.sort((a, b) => a.y - b.y); // 행 y 오름차순 (앞줄 → 뒷줄)
-  log(`   🗺️ 행 분포: ${rowMap.map(r => `y${Math.round(r.y)}(${r.seats.length}석)`).join(' ')}`);
-
-  // 2) 가장 좌석 많은 행 기준으로 선택
-  const bestRow = [...rowMap].sort((a, b) => b.seats.length - a.seats.length)[0];
-  if (bestRow.seats.length >= ticketCount) {
-    // 전략 A: 단일 행으로 충분 → 그 행의 좌석만 사용
-    candidates = bestRow.seats;
-    log(`   ✅ 동일 행 전략 y≈${Math.round(bestRow.y)} (${bestRow.seats.length}석)`);
-  } else {
-    // 전략 B: 가장 좌석 많은 행 기준으로 앞뒤 인접 행 추가
-    const pidx = rowMap.indexOf(bestRow);
-    const selected = [bestRow];
-    let lo = pidx - 1, hi = pidx + 1;
-    while (selected.reduce((s, r) => s + r.seats.length, 0) < ticketCount && (lo >= 0 || hi < rowMap.length)) {
-      const pickLo = lo >= 0 && (hi >= rowMap.length || Math.abs(rowMap[lo].y - bestRow.y) <= Math.abs(rowMap[hi].y - bestRow.y));
-      if (pickLo) { selected.push(rowMap[lo--]); }
-      else if (hi < rowMap.length) { selected.push(rowMap[hi++]); }
-      else break;
+  // 2) 각 행 내 연속 구간(run) 탐색
+  for (const r of rowMap) {
+    r.seats.sort((a, b) => a.x - b.x);
+    const runs = [[r.seats[0]]];
+    for (let i = 1; i < r.seats.length; i++) {
+      if (r.seats[i].x - r.seats[i - 1].x <= SEAT_GAP) runs[runs.length - 1].push(r.seats[i]);
+      else runs.push([r.seats[i]]);
     }
-    candidates = selected.flatMap(r => r.seats).sort((a, b) => a.y - b.y || a.x - b.x);
-    log(`   📐 인접 행 전략 (${selected.length}행, ${candidates.length}석)`);
+    r.runs = runs;
   }
+  rowMap.sort((a, b) => a.y - b.y);
+  log(`   🗺️ 행 분포: ${rowMap.map(r => `y${Math.round(r.y)}(${r.runs.map(g => g.length + '연속').join('+')})`).join(' ')}`);
 
-  // ① ticketCount 만큼 좌석 클릭 — 클릭 후 선택 수 증가 여부 확인
-  //    선택 안 됐거나 취소됐으면 다음 후보로 넘어감
+  // 3) 연속 구간 목록: ticketCount 충족하는 구간 먼저, 그 다음 긴 순서
+  const allRuns = rowMap.flatMap(r => r.runs);
+  const orderedRuns = [
+    ...allRuns.filter(r => r.length >= ticketCount).sort((a, b) => b.length - a.length),
+    ...allRuns.filter(r => r.length < ticketCount).sort((a, b) => b.length - a.length),
+  ];
+  log(`   📐 연속 구간: ${orderedRuns.map(r => r.length + '연속').join(', ')}`);
+
+  // ① 구간 단위로 좌석 클릭 — 구간 내 실패 시 해당 구간 취소 후 다음 구간 시도
   const getSelectedCount = async () => {
     const txt = await page.evaluate(() => document.body?.innerText || '').catch(() => '');
     const m = txt.match(/선택된\s*좌석\s*\((\d+)석\)/);
     return m ? parseInt(m[1]) : 0;
   };
   let selectedCount = await getSelectedCount();
-  for (let ci = 0; ci < candidates.length && selectedCount < ticketCount; ci++) {
-    const { x, y, n } = candidates[ci];
-    log(`   🪑 좌석 클릭 ${selectedCount + 1}/${ticketCount} @ (${x}, ${y}) n=${n}`);
-    await page.mouse.click(x, y);
-    await sleep(600);
-    const newCount = await getSelectedCount();
-    if (newCount > selectedCount) {
-      selectedCount = newCount;
-      log(`   ✓ 선택 확인: ${selectedCount}/${ticketCount}석`);
-    } else {
-      log(`   ↩️ 미선택 또는 취소 감지 (${selectedCount}석 유지) → 다음 후보`);
+  for (const run of orderedRuns) {
+    if (selectedCount >= ticketCount) break;
+    const need = ticketCount - selectedCount;
+    const seatsToTry = run.slice(0, need);
+    const clickedSeats = [];
+
+    for (const { x, y, n } of seatsToTry) {
+      log(`   🪑 좌석 클릭 ${selectedCount + clickedSeats.length + 1}/${ticketCount} @ (${x}, ${y}) n=${n}`);
+      await page.mouse.click(x, y);
+      await sleep(600);
+      const newCount = await getSelectedCount();
+      if (newCount === selectedCount + clickedSeats.length + 1) {
+        clickedSeats.push({ x, y });
+        log(`   ✓ 선택 확인: ${newCount}/${ticketCount}석`);
+      } else {
+        // 이 좌석 실패 → 구간 내 선택된 것 취소 후 다음 구간 시도
+        log(`   ↩️ 클릭 실패 (${x},${y}) → 구간 취소 후 다음 구간`);
+        for (const s of [...clickedSeats].reverse()) {
+          await page.mouse.click(s.x, s.y);
+          await sleep(400);
+        }
+        selectedCount = await getSelectedCount();
+        clickedSeats.length = 0;
+        break;
+      }
     }
+    if (clickedSeats.length > 0) selectedCount += clickedSeats.length;
   }
 
   // 좌석 클릭 후 상태 스크린샷
