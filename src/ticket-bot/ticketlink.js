@@ -1153,6 +1153,15 @@ async function runTicketBot(config) {
     await handleQueueIfAppears(page, 5000);
     await waitForCaptchaDone(page);
     await selectSeat(page, config);
+
+    // 다음단계 클릭으로 새 탭이 열렸을 수 있음 → 전환 필요
+    await sleep(500);
+    const nextStepTab = context.pages().find(p => p !== page && !p.isClosed() && p.url() !== 'about:blank');
+    if (nextStepTab) {
+      log(`📄 다음단계 새 탭 전환: ${nextStepTab.url().split('?')[0].split('/').slice(-2).join('/')}`);
+      page = nextStepTab;
+    }
+
     await handlePostSeatFlow(page);
   } catch (err) {
     log(`❌ 오류: ${err.message}`);
