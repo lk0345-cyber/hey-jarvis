@@ -69,15 +69,17 @@ async function login(page, config) {
   await paycoPopup.locator('input[placeholder*="비밀번호"], input[name="pw"], input[type="password"]').fill(config.paycoPw);
   await paycoPopup.locator('button:has-text("로그인"), .btn_login').first().click();
 
-  // 새 기기 인증 (팝업에서)
+  // 새 기기 인증 (PAYCO OTP — 사용자가 직접 입력)
   try {
     await paycoPopup.waitForSelector('text=새로운 기기', { timeout: 6000 });
-    log('📲 새 기기 인증 입력...');
-    await paycoPopup.locator('input[placeholder*="인증"], input[type="number"], input[maxlength="8"]').fill(
-      config.verificationCode
-    );
-    await paycoPopup.locator('button:has-text("확인")').click();
-  } catch { /* 인증 없음 */ }
+    log('📲 새 기기 인증 팝업 감지!');
+    log('   ✋ 브라우저에서 인증번호를 직접 입력 후 확인을 눌러주세요.');
+    log('   ⏳ 최대 120초 대기...');
+    // 팝업이 닫힐 때까지 대기 (사용자가 직접 인증번호 입력)
+    await paycoPopup.waitForEvent('close', { timeout: 120000 }).catch(() => {});
+    log('   ✅ 인증 완료');
+    return; // 이미 팝업 닫혔으므로 아래 close() 불필요
+  } catch { /* 인증 팝업 없음 */ }
 
   // 팝업 처리 완료 대기 후 강제 정리
   await sleep(3000);
