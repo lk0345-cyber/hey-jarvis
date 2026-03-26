@@ -909,27 +909,36 @@ async function clickAvailableSeats(page, ticketCount) {
   }
   log(`   후보: ${candidates.slice(0, 8).map(s => `(${s.x},${s.y})n=${s.n}`).join(' ')}`);
 
-  // ① ticketCount 만큼 좌석 클릭 (한 번에)
-  //    이후 다음단계 버튼만 반복 시도 — 절대 추가 좌석을 클릭하지 않음
-  let clicked = 0;
-  for (let ci = 0; ci < candidates.length && clicked < ticketCount; ci++) {
+  // ① ticketCount 만큼 좌석 클릭 — 클릭 후 선택 수 증가 여부 확인
+  //    선택 안 됐거나 취소됐으면 다음 후보로 넘어감
+  const getSelectedCount = async () => {
+    const txt = await page.evaluate(() => document.body?.innerText || '').catch(() => '');
+    const m = txt.match(/선택된\s*좌석\s*\((\d+)석\)/);
+    return m ? parseInt(m[1]) : 0;
+  };
+  let selectedCount = await getSelectedCount();
+  for (let ci = 0; ci < candidates.length && selectedCount < ticketCount; ci++) {
     const { x, y, n } = candidates[ci];
-    log(`   🪑 좌석 클릭 ${clicked + 1}/${ticketCount} @ (${x}, ${y}) n=${n}`);
+    log(`   🪑 좌석 클릭 ${selectedCount + 1}/${ticketCount} @ (${x}, ${y}) n=${n}`);
     await page.mouse.click(x, y);
-    await sleep(1200);
-    clicked++;
+    await sleep(1000);
+    const newCount = await getSelectedCount();
+    if (newCount > selectedCount) {
+      selectedCount = newCount;
+      log(`   ✓ 선택 확인: ${selectedCount}/${ticketCount}석`);
+    } else {
+      log(`   ↩️ 미선택 또는 취소 감지 (${selectedCount}석 유지) → 다음 후보`);
+    }
   }
 
   // 좌석 클릭 후 상태 스크린샷
   await page.screenshot({ path: `${home}/Desktop/seat-clicked.png` }).catch(() => {});
+  log(`   📋 최종 선택: ${selectedCount}/${ticketCount}석`);
 
-  // 선택 상태 확인
-  const selInfo = await page.evaluate(() => {
-    const txt = document.body?.innerText || '';
-    const m = txt.match(/선택된\s*좌석[^\n]*/);
-    return m ? m[0].trim() : null;
-  }).catch(() => null);
-  log(`   📋 선택 상태: ${selInfo ?? '(정보없음)'}`);
+  if (selectedCount === 0) {
+    log('   ❌ 좌석 선택 0석 — 클릭이 모두 미스 또는 취소됨');
+    return 'no_candidates';
+  }
 
   // ② 다음단계를 최대 8회 시도 — 좌석 추가 클릭 없이
   for (let retry = 0; retry < 8; retry++) {
