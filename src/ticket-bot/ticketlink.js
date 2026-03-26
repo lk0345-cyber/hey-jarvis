@@ -294,13 +294,20 @@ async function enterReservePage(page, config) {
 // ─────────────────────────────────────────────
 
 async function reloadAndWait(page) {
-  await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
-  // 페이지 콘텐츠가 실제로 렌더링될 때까지 대기 (최소 1초, 최대 8초)
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+  // 경기 목록이 실제로 렌더링될 때까지 대기 (peak traffic 대응 — 최대 15초)
+  // 단순 글자 수(200)가 아니라 경기/예매 관련 텍스트가 나타날 때까지 기다림
   await page.waitForFunction(
-    () => (document.body?.innerText?.length || 0) > 200,
-    { timeout: 8000 }
+    () => {
+      const txt = document.body?.innerText || '';
+      if (txt.length < 200) return false;
+      return txt.includes('예매하기') || txt.includes('오픈예정') ||
+             txt.includes('한화') || txt.includes('경기일정') ||
+             txt.includes('18:30') || txt.includes('19:00') || txt.includes('14:00');
+    },
+    { timeout: 15000 }
   ).catch(() => {});
-  await sleep(500);
+  await sleep(300);
 }
 
 async function pollAndClickBookingButton(page, targetDate) {
@@ -332,16 +339,28 @@ async function pollAndClickBookingButton(page, targetDate) {
 
       const visible = await btn.isVisible().catch(() => false);
       if (!visible) {
-        log(`   [${attempt + 1}] 버튼 없음 → 새로고침 후 대기`);
-        await reloadAndWait(page);
+        // 피크타임 대응: 2번은 대기만, 3번째마다 새로고침 (너무 잦은 새로고침 방지)
+        if (attempt % 3 === 2) {
+          log(`   [${attempt + 1}] 버튼 없음 → 새로고침`);
+          await reloadAndWait(page);
+        } else {
+          log(`   [${attempt + 1}] 버튼 없음 → 대기 중 (${attempt % 3 + 1}/3)...`);
+          await sleep(2000);
+        }
         continue;
       }
 
       const disabled = await btn.isDisabled().catch(() => false);
       const text = await btn.textContent().catch(() => '');
       if (disabled || text.includes('오픈') || text.includes('예정')) {
-        log(`   [${attempt + 1}] 버튼 비활성 → 새로고침 후 대기`);
-        await reloadAndWait(page);
+        // 오픈 전 대기 중: 짧은 간격으로 반복 (새로고침은 3번에 1번)
+        if (attempt % 3 === 2) {
+          log(`   [${attempt + 1}] 버튼 비활성 → 새로고침`);
+          await reloadAndWait(page);
+        } else {
+          log(`   [${attempt + 1}] 버튼 비활성 → 대기 중...`);
+          await sleep(1500);
+        }
         continue;
       }
 
