@@ -164,18 +164,23 @@ async function waitForOpenTime(openTimeStr) {
   const target = new Date(now);
   target.setHours(h, m, s, 0);
 
-  // 오늘 목표 시각이 이미 지났으면 내일로 설정
-  if (target.getTime() - OPEN_LEAD_MS <= now.getTime()) {
+  const diffMs = target.getTime() - now.getTime();
+
+  if (diffMs < 0 && Math.abs(diffMs) < 30 * 60 * 1000) {
+    // 오픈 시간이 지난 지 30분 이내 → 이미 열려있으므로 즉시 진행
+    log(`⚡ 오픈 시간 ${Math.round(Math.abs(diffMs) / 1000)}초 지남 → 즉시 폴링 시작`);
+    return;
+  }
+
+  if (diffMs < 0) {
+    // 30분 이상 지남 → 다음날 같은 시각으로 설정
     target.setDate(target.getDate() + 1);
   }
 
   // 페이지 로딩 선행: 목표 시각 OPEN_LEAD_MS 전에 폴링 시작
   const waitMs = target.getTime() - now.getTime() - OPEN_LEAD_MS;
-
-  const hh = String(target.getHours()).padStart(2,'0');
-  const mm = String(target.getMinutes()).padStart(2,'0');
   const dd = `${target.getMonth()+1}/${target.getDate()}`;
-  log(`⏱  오픈까지 ${Math.round((waitMs + OPEN_LEAD_MS) / 1000)}초 대기 → ${dd} ${hh}:${mm} 기준 ${OPEN_LEAD_MS / 1000}초 선행 시작`);
+  log(`⏱  오픈까지 ${Math.round((waitMs + OPEN_LEAD_MS) / 1000)}초 대기 → ${dd} ${openTimeStr} 기준 ${OPEN_LEAD_MS / 1000}초 선행`);
 
   if (waitMs > 31000) await sleep(waitMs - 30000);
 
@@ -185,7 +190,7 @@ async function waitForOpenTime(openTimeStr) {
     await sleep(1000);
     remaining -= 1000;
   }
-  await sleep(remaining);
+  await sleep(Math.max(remaining, 0));
   process.stdout.write('\r');
   log(`🚀 폴링 시작! (${openTimeStr} 기준 ${OPEN_LEAD_MS / 1000}초 선행)`);
 }
@@ -270,24 +275,22 @@ async function enterReservePage(page, config) {
 // ─────────────────────────────────────────────
 
 async function pollAndClickBookingButton(page, targetDate) {
-  log('⚡ 예매하기 버튼 폴링 시작 (100ms 간격)...');
+  log('⚡ 예매하기 버튼 폴링 시작...');
 
-  for (let attempt = 0; attempt < 300; attempt++) {
-    // 팝업이 이미 나타났으면 즉시 중단 (이전 클릭이 성공한 것)
+  for (let attempt = 0; attempt < 60; attempt++) {
+    // 페이지 로드 완료 대기 (새로고침 후 빈 화면 방지)
+    await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
+
+    // 팝업이 이미 나타났으면 즉시 중단
     const popupVisible = await page.evaluate(() =>
       !!document.querySelector('.common_modal[role="dialog"]')
     ).catch(() => false);
     if (popupVisible) {
-      log(`✅ 예매하기 성공 → 팝업 감지 (총 ${attempt}번 시도)`);
+      log(`✅ 예매하기 성공 → 팝업 감지 (${attempt + 1}번째 시도)`);
       break;
     }
 
-    if (attempt > 0 && attempt % 10 === 0) {
-      await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
-    }
-
     try {
-      // 날짜·장소를 포함한 행에서 예매하기 버튼 탐색
       const btn = page.locator('li, tr')
         .filter({ hasText: targetDate })
         .filter({ hasText: VENUE_NAME })
@@ -295,40 +298,44 @@ async function pollAndClickBookingButton(page, targetDate) {
         .first();
 
       const visible = await btn.isVisible().catch(() => false);
-      if (!visible) { await sleep(100); continue; }
+      if (!visible) {
+        log(`   [${attempt + 1}] 버튼 없음 → 새로고침`);
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+        continue;
+      }
 
       const disabled = await btn.isDisabled().catch(() => false);
-      if (disabled) { await sleep(100); continue; }
-
       const text = await btn.textContent().catch(() => '');
-      if (text.includes('오픈') || text.includes('예정')) { await sleep(100); continue; }
+      if (disabled || text.includes('오픈') || text.includes('예정')) {
+        log(`   [${attempt + 1}] 버튼 비활성 → 새로고침`);
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+        continue;
+      }
 
       await btn.scrollIntoViewIfNeeded();
       const box = await btn.boundingBox().catch(() => null);
-      if (!box) { await sleep(100); continue; }
-      const tx = box.x + box.width / 2;
-      const ty = box.y + box.height / 2;
+      if (!box) { await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {}); continue; }
 
-      // 자연스러운 마우스 이동 후 클릭 (mousemove 이벤트 포함)
-      await page.mouse.move(tx - 120, ty + 40);
+      log(`   [${attempt + 1}] 예매하기 버튼 활성 → 클릭`);
+      await page.mouse.move(box.x + box.width / 2 - 120, box.y + box.height / 2 + 40);
       await sleep(40);
-      await page.mouse.move(tx, ty, { steps: 12 });
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 12 });
       await sleep(60);
-      await page.mouse.click(tx, ty);
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 
-      // 팝업이 나타날 때까지 최대 2초 대기 → 재클릭 방지
-      const appeared = await page.waitForSelector('.common_modal[role="dialog"]', { timeout: 2000 })
+      const appeared = await page.waitForSelector('.common_modal[role="dialog"]', { timeout: 3000 })
         .then(() => true).catch(() => false);
       if (appeared) {
         log(`✅ 예매하기 클릭 성공 (${attempt + 1}번째 시도) → 팝업 감지`);
         break;
       }
+      // 팝업 미감지 → 재시도
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
     } catch {
-      await sleep(100);
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
     }
   }
 
-  // 팝업 처리 (루프 종료 후 단 1회 호출)
   await handleConfirmPopup(page, '예매안내', 10000);
 }
 
