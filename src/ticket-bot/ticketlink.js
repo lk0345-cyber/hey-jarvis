@@ -1064,11 +1064,16 @@ async function handlePostSeatFlow(page) {
 async function runTicketBot(config) {
   const chromePath = getChromePath();
   const headless = !IS_MAC;
+  // 쿠키/세션 저장 경로 (재실행 시 로그인 유지 → 새 기기 인증 불필요)
+  const userDataDir = require('path').join(require('os').homedir(), '.ticketbot-session');
   log(`🌐 Chrome 실행... (${IS_MAC ? 'Mac' : '클라우드'} / ${headless ? 'headless' : 'headed'})`);
+  log(`   💾 세션 저장: ${userDataDir}`);
 
-  const browser = await chromium.launch({
+  const context = await chromium.launchPersistentContext(userDataDir, {
     headless,
     executablePath: chromePath,
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    viewport: { width: 1280, height: 900 },
     args: [
       '--start-maximized',
       '--disable-blink-features=AutomationControlled',
@@ -1085,18 +1090,13 @@ async function runTicketBot(config) {
     ],
   });
 
-  const context = await browser.newContext({
-    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 900 },
-  });
-
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     window.alert = () => {};
     window.confirm = () => true;
   });
 
-  let page = await context.newPage();
+  let page = context.pages()[0] || await context.newPage();
 
   page.on('dialog', async (dialog) => {
     try { await dialog.accept(); } catch { /* ignore */ }
