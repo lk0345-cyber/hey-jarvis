@@ -782,12 +782,16 @@ async function clickNextStep(page, urlBefore, shotIndex) {
     return false;
   }
 
-  // 클릭 전 선택 좌석 상태 로그
-  const stateBefore = await page.evaluate(() => {
+  // 클릭 전 선택 좌석 상태 로그 + 좌석선택 페이지 여부 확인
+  const { stateBefore, wasOnSeatPage } = await page.evaluate(() => {
     const txt = document.body?.innerText || '';
     const m = txt.match(/선택된\s*좌석[^\n]*/);
-    return m ? m[0].trim() : '(좌석정보없음)';
-  }).catch(() => '?');
+    return {
+      stateBefore: m ? m[0].trim() : '(좌석정보없음)',
+      // 좌석선택 페이지 특유의 하단 안내 문구
+      wasOnSeatPage: txt.includes('직접선택으로 예매') || txt.includes('좌석을 선택해 주세요') || txt.includes('선택된좌석 ('),
+    };
+  }).catch(() => ({ stateBefore: '?', wasOnSeatPage: false }));
   log(`   📋 클릭 전 상태: ${stateBefore}`);
 
   const box = await nextBtn.boundingBox().catch(() => null);
@@ -838,6 +842,17 @@ async function clickNextStep(page, urlBefore, shotIndex) {
     if (page.url() !== urlBefore) {
       log(`   ✅ URL 변화 감지 → ${page.url().split('/').slice(-2).join('/')}`);
       return true;
+    }
+    // 좌석선택 페이지에서 이동했는지 감지 (하단 안내 문구 소멸)
+    if (wasOnSeatPage) {
+      const leftSeatPage = await page.evaluate(() => {
+        const txt = document.body?.innerText || '';
+        const stillOnSeat = txt.includes('직접선택으로 예매') ||
+                            txt.includes('좌석을 선택해 주세요') ||
+                            txt.includes('선택된좌석 (');
+        return !stillOnSeat && txt.length > 100;
+      }).catch(() => false);
+      if (leftSeatPage) { log('   ✅ 좌석선택 페이지 이탈 감지 → 다음 단계로 이동'); return true; }
     }
     // 새 탭 확인
     const newTab = page.context().pages().find(p => p !== page && !p.isClosed());
