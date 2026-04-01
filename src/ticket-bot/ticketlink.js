@@ -964,7 +964,7 @@ async function clickNextStep(page, urlBefore, shotIndex) {
     return {
       stateBefore: m ? m[0].trim() : '(좌석정보없음)',
       // 좌석선택 페이지 특유의 하단 안내 문구
-      wasOnSeatPage: txt.includes('직접선택으로 예매') || txt.includes('좌석을 선택해 주세요') || txt.includes('선택된좌석 ('),
+      wasOnSeatPage: txt.includes('직접선택으로 예매') || txt.includes('좌석을 선택해 주세요') || txt.includes('선택된 좌석 (') || txt.includes('선택된좌석 ('),
     };
   }).catch(() => ({ stateBefore: '?', wasOnSeatPage: false }));
   log(`   📋 클릭 전 상태: ${stateBefore}`);
@@ -1024,6 +1024,7 @@ async function clickNextStep(page, urlBefore, shotIndex) {
         const txt = document.body?.innerText || '';
         const stillOnSeat = txt.includes('직접선택으로 예매') ||
                             txt.includes('좌석을 선택해 주세요') ||
+                            txt.includes('선택된 좌석 (') ||
                             txt.includes('선택된좌석 (');
         return !stillOnSeat && txt.length > 100;
       }).catch(() => false);
