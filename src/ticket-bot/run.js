@@ -1,11 +1,10 @@
 'use strict';
 
 // Ctrl+C: 봇 중단, 브라우저는 열어둠
-// removeAllListeners('exit') 로 Playwright 정리 핸들러 차단 → Chrome 생존
+// SIGKILL 로 Node 즉시 종료 → Playwright cleanup 실행 기회 없음 → Chrome 생존
 process.on('SIGINT', () => {
   process.stdout.write('\n⏹  봇 중단 — 브라우저는 그대로 열려있습니다. 직접 이어서 진행하세요.\n');
-  process.removeAllListeners('exit');
-  process.exit(0);
+  process.kill(process.pid, 'SIGKILL');
 });
 
 require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
