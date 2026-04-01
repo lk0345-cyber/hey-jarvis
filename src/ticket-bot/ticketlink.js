@@ -169,18 +169,42 @@ async function extractScheduleId(page, targetDate) {
 
     page.off('response', responseHandler);
 
-    // ─── Method 2: DOM 전수 검사 (날짜 + 구장명 필터 적용) ───────────────
-    // innerHTML 전체 검색은 하지 않음 — 날짜 컨텍스트 없는 ID는 netCandidates로
+    // ─── Method 2: DOM 전수 검사 (날짜 + 구장명 필터) ───────────────────
     const domFiltered = await page.evaluate(({ venue, date }) => {
+      // 날짜 형식 변환: "04.02" → 여러 표현형 생성
+      const dateVariants = new Set();
+      if (date) {
+        dateVariants.add(date); // 04.02
+        const [mo, da] = date.split('.').map(Number);
+        // 04월 02일 / 4월 2일 / 4월 02일 / 04월 2일
+        dateVariants.add(`${mo}월 ${da}일`);
+        dateVariants.add(`${String(mo).padStart(2,'0')}월 ${String(da).padStart(2,'0')}일`);
+        dateVariants.add(`${mo}/${da}`);
+        dateVariants.add(`${String(mo).padStart(2,'0')}/${String(da).padStart(2,'0')}`);
+        dateVariants.add(`${mo}.${da}`);   // 4.2 (앞 0 없음)
+        dateVariants.add(`${String(mo).padStart(2,'0')}.${String(da).padStart(2,'0')}`); // 04.02
+      }
+      const matchesDate = (ctx) => !date || [...dateVariants].some(v => ctx.includes(v));
+
       const found = new Set();
+
+      // 2-1. 직접 예매 링크 탐색 (이미 오픈된 경기 — href 바로 있음)
+      for (const a of document.querySelectorAll('a[href*="/reserve/plan/schedule/"]')) {
+        const m = (a.getAttribute('href') || '').match(/\/reserve\/plan\/schedule\/(\d{6,})/);
+        if (!m) continue;
+        const row = a.closest('li, tr, [class*="item"], [class*="row"]');
+        const ctx = row?.textContent || '';
+        if (!matchesDate(ctx)) continue;
+        found.add(m[1]);
+      }
+
+      // 2-2. 모든 요소 속성 전수 검사 (오픈예정 경기 포함)
       for (const el of document.querySelectorAll('*')) {
-        // 해당 경기 행(li/tr) 안에 있는 요소만
         const row = el.closest('li, tr, [class*="item"], [class*="row"]');
         const ctx = row?.textContent || '';
         if (!ctx.includes(venue)) continue;
-        if (date && !ctx.includes(date)) continue;
+        if (!matchesDate(ctx)) continue;
 
-        // 모든 속성
         for (const attr of el.attributes) {
           const v = attr.value;
           const m1 = v.match(/\/reserve\/plan\/schedule\/(\d{6,})/);
@@ -190,7 +214,6 @@ async function extractScheduleId(page, targetDate) {
         const href = el.getAttribute('href') || '';
         const mh = href.match(/\/reserve\/plan\/schedule\/(\d{6,})/);
         if (mh) found.add(mh[1]);
-
         const oc = el.getAttribute('onclick') || '';
         const mo = oc.match(/\/reserve\/plan\/schedule\/(\d{6,})/);
         if (mo) found.add(mo[1]);
