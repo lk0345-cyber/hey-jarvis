@@ -470,13 +470,22 @@ async function pollAndClickBookingButton(page, targetDate, openTime = 'now', ope
             log(`   [${attempt + 1}] 오픈예정 확인 → 정각(${openTime})까지 대기`);
             await waitForOpenTime(openTime, 0, openDate);
             openTimeReloadDone = true;
-            // 피크타임 대응: 버튼 대기를 30초로 충분히 확보 (페이지 느려도 버팀)
-            const success = await reloadAndClickWhenReady('정각 도달', 30000);
-            if (success) { log('✅ 예매하기 클릭 성공 (정각 새로고침)'); break; }
-            // 30초 대기 후에도 버튼 미감지 → 한 번 더 reload 시도
-            log('   ⚠️  30초 대기 후 버튼 미감지 → 재시도');
-            const retry = await reloadAndClickWhenReady('재시도', 20000);
-            if (retry) { log('✅ 예매하기 클릭 성공 (재시도)'); break; }
+            // 정각 새로고침 1회 → 버튼 뜰 때까지 무한 대기 (추가 reload 없음)
+            log('   🔄 정각 도달 → 새로고침');
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+            const btn2 = activeBtnLocator();
+            log('   ⏳ 예매하기 버튼 대기 중...');
+            const appeared = await btn2.waitFor({ state: 'visible', timeout: 120000 })
+              .then(() => true).catch(() => false);
+            if (!appeared) { log('   ⚠️  2분 내 버튼 미감지'); continue; }
+            const dis = await btn2.isDisabled().catch(() => false);
+            const txt2 = await btn2.textContent().catch(() => '');
+            if (dis || txt2.includes('오픈') || txt2.includes('예정')) { continue; }
+            log('   ✅ 예매하기 버튼 감지 → 즉시 클릭');
+            await btn2.click().catch(() => {});
+            const ok = await page.waitForSelector('.common_modal[role="dialog"]', { timeout: 3000 })
+              .then(() => true).catch(() => false);
+            if (ok) { log('✅ 예매하기 클릭 성공 (정각 새로고침)'); break; }
             continue;
           }
         }
