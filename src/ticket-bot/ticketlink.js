@@ -192,13 +192,55 @@ const OPEN_LEAD_MS = 3500;
 // 오픈 전 예매 URL 선점 진입 시간 (ms)
 const PRE_ENTER_LEAD_MS = 90000; // 90초 전
 
+// ─────────────────────────────────────────────
+// 티켓링크 서버 시간 동기화
+// ─────────────────────────────────────────────
+// serverTimeOffset > 0: 서버가 로컬보다 앞섬 → 로컬이 늦으니 일찍 클릭 필요
+// serverTimeOffset < 0: 서버가 로컬보다 뒤처짐
+let serverTimeOffset = 0;
+
+async function syncServerTime(page) {
+  const samples = [];
+  for (let i = 0; i < 5; i++) {
+    const t0 = Date.now();
+    const dateHeader = await page.evaluate(async () => {
+      try {
+        const r = await fetch('https://www.ticketlink.co.kr/', { method: 'HEAD', cache: 'no-store' });
+        return r.headers.get('Date');
+      } catch { return null; }
+    });
+    const t1 = Date.now();
+    if (dateHeader) {
+      const serverMs = new Date(dateHeader).getTime();
+      const rtt = t1 - t0;
+      // 서버 응답 수신 시각 ≈ 요청 중간 시점
+      const localAtResponse = t0 + Math.round(rtt / 2);
+      samples.push(serverMs - localAtResponse);
+    }
+    if (i < 4) await sleep(200);
+  }
+  if (samples.length === 0) {
+    log('⚠️ 서버 시간 동기화 실패 — 로컬 시계 기준으로 진행');
+    return;
+  }
+  // 중앙값 사용 (이상치 제거)
+  samples.sort((a, b) => a - b);
+  serverTimeOffset = samples[Math.floor(samples.length / 2)];
+  const sign = serverTimeOffset >= 0 ? '+' : '';
+  log(`🕐 서버 시간 동기화 완료: 로컬 대비 ${sign}${serverTimeOffset}ms (${samples.length}회 측정)`);
+  if (Math.abs(serverTimeOffset) > 1000) {
+    log(`⚠️ 시계 오차 ${Math.abs(serverTimeOffset)}ms — 시스템 시간 동기화를 권장합니다`);
+  }
+}
+
 async function waitForOpenTime(openTimeStr, leadMs = OPEN_LEAD_MS, openDate = '') {
   if (openTimeStr === 'now') {
     log('⚡ 즉시 예매 모드 — 대기 없이 바로 진행');
     return;
   }
 
-  const now = new Date();
+  // 서버 시간 기준 현재 시각 (로컬 + 오프셋)
+  const now = new Date(Date.now() + serverTimeOffset);
   const [h, m, s] = openTimeStr.split(':').map(Number);
   const target = new Date(now);
   target.setHours(h, m, s, 0);
@@ -1233,6 +1275,7 @@ async function runTicketBot(config) {
 
   try {
     await login(page, config);
+    await syncServerTime(page); // 티켓링크 서버 시간 동기화
     await enterReservePage(page, config); // 예매안내 팝업 처리 포함
 
     // 새 탭으로 예매 페이지가 열렸는지 확인 (팝업 확인 클릭 후 최대 5초 대기)
