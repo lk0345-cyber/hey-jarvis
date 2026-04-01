@@ -4,13 +4,15 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../.env') }
 
 const { runTicketBot } = require('./ticketlink');
 
-// 실행 시 ticketlink.js 를 바탕화면에 자동 백업
+// 실행 시 ticketlink.js 를 바탕화면 pc 폴더에 자동 백업
 try {
   const fs = require('fs');
   const path = require('path');
   const os = require('os');
   const src = path.join(__dirname, 'ticketlink.js');
-  const dst = path.join(os.homedir(), 'Desktop', 'ticketlink-backup.js');
+  const dstDir = path.join(os.homedir(), 'Desktop', 'pc');
+  if (!fs.existsSync(dstDir)) fs.mkdirSync(dstDir, { recursive: true });
+  const dst = path.join(dstDir, 'ticketlink-backup.js');
   fs.copyFileSync(src, dst);
   console.log(`💾 백업 저장: ${dst}`);
 } catch { /* 바탕화면 없는 환경에서는 무시 */ }
