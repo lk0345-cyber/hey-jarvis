@@ -192,7 +192,7 @@ const OPEN_LEAD_MS = 3500;
 // 오픈 전 예매 URL 선점 진입 시간 (ms)
 const PRE_ENTER_LEAD_MS = 90000; // 90초 전
 
-async function waitForOpenTime(openTimeStr, leadMs = OPEN_LEAD_MS) {
+async function waitForOpenTime(openTimeStr, leadMs = OPEN_LEAD_MS, openDate = '') {
   if (openTimeStr === 'now') {
     log('⚡ 즉시 예매 모드 — 대기 없이 바로 진행');
     return;
@@ -202,6 +202,11 @@ async function waitForOpenTime(openTimeStr, leadMs = OPEN_LEAD_MS) {
   const [h, m, s] = openTimeStr.split(':').map(Number);
   const target = new Date(now);
   target.setHours(h, m, s, 0);
+  // openDate가 지정된 경우 해당 날짜로 설정 (예: '04.03' → 4월 3일)
+  if (openDate) {
+    const [mo, da] = openDate.split('.').map(Number);
+    target.setMonth(mo - 1, da);
+  }
 
   const waitMs = target.getTime() - now.getTime() - leadMs;
 
@@ -267,7 +272,7 @@ async function enterReservePage(page, config) {
     });
   }).catch(() => {});
 
-  const { targetGameDate, openTime } = config;
+  const { targetGameDate, openTime, openDate } = config;
 
   // ── 전략 A: 사전 URL 추출 ──────────────────────
   const scheduleId = await extractScheduleId(page, targetGameDate);
@@ -276,13 +281,13 @@ async function enterReservePage(page, config) {
     const reserveUrl = `${RESERVE_BASE}/${scheduleId}?menuIndex=reserve`;
 
     // 오픈 90초 전에 미리 예매 URL 진입 (대기열 + 연결 선점)
-    await waitForOpenTime(openTime, PRE_ENTER_LEAD_MS);
+    await waitForOpenTime(openTime, PRE_ENTER_LEAD_MS, openDate);
     log(`🏃 오픈 ${PRE_ENTER_LEAD_MS / 1000}초 전 예매 URL 선점: ${reserveUrl}`);
     await page.goto(reserveUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
     log(`📍 선점 완료: ${page.url().split('?')[0].split('/').slice(-2).join('/')}`);
 
     // 오픈 시각 3.5초 전까지 대기 (이미 예매 페이지에 있는 상태)
-    await waitForOpenTime(openTime, OPEN_LEAD_MS);
+    await waitForOpenTime(openTime, OPEN_LEAD_MS, openDate);
 
     // 오픈 직후 새로고침으로 예매 활성화
     log('🔄 오픈 직후 새로고침...');
@@ -294,7 +299,7 @@ async function enterReservePage(page, config) {
     // ── 전략 B: 스포츠 페이지 폴링 ───────────────
     log('📍 스포츠 페이지 폴링 전략');
     await page.goto(SPORTS_PAGE, { waitUntil: 'domcontentloaded' });
-    await waitForOpenTime(openTime);
+    await waitForOpenTime(openTime, OPEN_LEAD_MS, openDate);
     await pollAndClickBookingButton(page, targetGameDate);
   }
 
