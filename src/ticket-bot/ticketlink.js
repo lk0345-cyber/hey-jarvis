@@ -118,8 +118,7 @@ async function login(page, config) {
 }
 
 // ─────────────────────────────────────────────
-// 전략 A: 스포츠 페이지에서 Schedule ID 사전 추출
-// (오픈 전 disabled 버튼에서 data 속성으로 추출)
+// (미사용 — Schedule ID 추출은 신뢰도 낮아 제거됨)
 // ─────────────────────────────────────────────
 
 async function extractScheduleId(page, targetDate) {
@@ -364,7 +363,7 @@ async function handleQueueIfAppears(page, detectTimeout = 8000) {
 }
 
 // ─────────────────────────────────────────────
-// 예매 진입 (전략 A or B 자동 선택)
+// 예매 진입
 // ─────────────────────────────────────────────
 
 async function enterReservePage(page, config) {
@@ -372,81 +371,16 @@ async function enterReservePage(page, config) {
   await sleep(1000);
   await page.evaluate(() => {
     document.querySelectorAll('.full_page_pop, .layer_pop, .dimmed').forEach(el => {
-      // 로그인 모달이 아닌 경우만 제거
       if (!el.closest('.login_layer')) el.remove();
     });
   }).catch(() => {});
 
   const { targetGameDate, openTime, openDate } = config;
 
-  // ── 전략 A: 사전 URL 추출 (복수 후보 순차 시도) ───────────────────────
-  const scheduleIds = await extractScheduleId(page, targetGameDate);
-
-  // 날짜 필터 후보: 5개 이하면 신뢰도 높음 / 초과면 네트워크 폴백(날짜 불명)
-  const isDateFiltered = scheduleIds.length > 0 && scheduleIds.length <= 5;
-
-  if (scheduleIds.length > 0) {
-    // 오픈 90초 전에 미리 예매 URL 진입 (대기열 + 연결 선점)
-    await waitForOpenTime(openTime, PRE_ENTER_LEAD_MS, openDate);
-
-    // 첫 번째 후보로 선점 진입
-    const chosenId = scheduleIds[0];
-    const firstUrl = `${RESERVE_BASE}/${chosenId}?menuIndex=reserve`;
-    log(`🏃 오픈 ${PRE_ENTER_LEAD_MS / 1000}초 전 예매 URL 선점: ${firstUrl}`);
-    await page.goto(firstUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-    log(`📍 선점 완료: ${page.url().split('?')[0].split('/').slice(-2).join('/')}`);
-
-    // 오픈 시각 3.5초 전까지 대기 (이미 예매 페이지에 있는 상태)
-    await waitForOpenTime(openTime, OPEN_LEAD_MS, openDate);
-
-    // 오픈 직후 새로고침으로 예매 활성화
-    log('🔄 오픈 직후 새로고침...');
-    await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-
-    // 예매 진입 여부 확인
-    const openedOk = await page.evaluate(() => {
-      const txt = document.body?.innerText || '';
-      return txt.includes('예매안내') || txt.includes('보안문자') || txt.includes('좌석') ||
-             txt.includes('내야') || txt.includes('잔디') || txt.includes('응원단') ||
-             txt.includes('권종') || txt.includes('배송');
-    }).catch(() => false);
-
-    if (!openedOk) {
-      if (isDateFiltered && scheduleIds.length > 1) {
-        // 날짜 필터된 소수 후보만 순환
-        log('⚠️  첫 번째 ID 예매 미진입 → 나머지 날짜 확정 후보 시도');
-        for (const altId of scheduleIds.slice(1)) {
-          const altUrl = `${RESERVE_BASE}/${altId}?menuIndex=reserve`;
-          log(`   → 후보 ID ${altId}: ${altUrl}`);
-          await page.goto(altUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-          await sleep(800);
-          const ok = await page.evaluate(() => {
-            const txt = document.body?.innerText || '';
-            return txt.includes('예매안내') || txt.includes('보안문자') || txt.includes('좌석') ||
-                   txt.includes('내야') || txt.includes('잔디');
-          }).catch(() => false);
-          if (ok) { log(`   ✅ ID ${altId} 예매 진입 성공`); break; }
-        }
-      } else {
-        // 네트워크 폴백 후보였거나 단일 후보 실패 → 전략 B로 전환
-        log('⚠️  Schedule ID 예매 진입 실패 → 스포츠 페이지 폴링으로 전환');
-        await page.goto(SPORTS_PAGE, { waitUntil: 'domcontentloaded' });
-        await pollAndClickBookingButton(page, targetGameDate, openTime, openDate);
-        return;
-      }
-    }
-
-    // 예매안내 팝업 처리 (없으면 자동 통과)
-    await handleConfirmPopup(page, '예매안내', 8000);
-  } else {
-    // ── 전략 B: 스포츠 페이지 폴링 ───────────────
-    log('📍 스포츠 페이지 폴링 전략');
-    await page.goto(SPORTS_PAGE, { waitUntil: 'domcontentloaded' });
-    await waitForOpenTime(openTime, OPEN_LEAD_MS, openDate);
-    await pollAndClickBookingButton(page, targetGameDate, openTime, openDate);
-  }
-
-  // 대기열 처리 (runTicketBot에서 팝업과 병렬 실행)
+  log('📍 스포츠 페이지 이동');
+  await page.goto(SPORTS_PAGE, { waitUntil: 'domcontentloaded' });
+  await waitForOpenTime(openTime, OPEN_LEAD_MS, openDate);
+  await pollAndClickBookingButton(page, targetGameDate, openTime, openDate);
 }
 
 // ─────────────────────────────────────────────
