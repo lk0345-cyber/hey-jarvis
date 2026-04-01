@@ -1187,15 +1187,24 @@ async function clickAvailableSeats(page, ticketCount) {
 // 전체 좌석 선택 플로우
 // ─────────────────────────────────────────────
 
-// 단일 등급 시도 — 'success' | 'zero_seats' | 'insufficient_seats' | 'not_found' | 'no_candidates' | 'next_step_failed'
+// 단일 등급 시도 — count → count-1 → ... → 1 순으로 연속 장수 줄여가며 재시도
 async function trySelectGrade(page, grade, count) {
-  const gradeResult = await clickTargetGradeInPanel(page, grade, count);
-  if (gradeResult !== 'ok') return gradeResult;
+  for (let n = count; n >= 1; n--) {
+    if (n < count) log(`   → ${n}장 연속으로 재시도`);
 
-  await selectBestSubSection(page, count);
-  await handleSeatTypePopup(page, grade);
-  const seatResult = await clickAvailableSeats(page, count);
-  return seatResult === true ? 'success' : seatResult;
+    const gradeResult = await clickTargetGradeInPanel(page, grade, n);
+    if (gradeResult === 'zero_seats') return 'zero_seats';   // 등급 자체 매진
+    if (gradeResult === 'not_found')  return 'not_found';    // 등급 목록에 없음
+    if (gradeResult === 'insufficient_seats') continue;      // 잔여 부족 → 더 적은 장수 시도
+
+    await selectBestSubSection(page, n);
+    await handleSeatTypePopup(page, grade);
+    const seatResult = await clickAvailableSeats(page, n);
+    if (seatResult === true) return 'success';
+    if (seatResult === 'next_step_failed') return 'next_step_failed';
+    // no_candidates: 이 장수로는 연속 좌석 없음 → 더 적은 장수 재시도
+  }
+  return 'no_candidates';
 }
 
 const FAIL_REASON = {
