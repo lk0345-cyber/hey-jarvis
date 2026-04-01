@@ -123,64 +123,111 @@ async function login(page, config) {
 // ─────────────────────────────────────────────
 
 async function extractScheduleId(page, targetDate) {
-  log('🔍 Schedule ID 사전 추출 시도...');
-  await page.goto(SPORTS_PAGE, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+  log('🔍 Schedule ID 추출 시작 (네트워크+DOM+재시도)...');
+  const allCandidates = new Set();
 
-  // JS 렌더링 대기 — 경기 목록이 나타날 때까지 (최대 10초)
-  await page.waitForFunction(
-    (date) => {
-      const txt = document.body?.innerText || '';
-      return txt.includes(date) || txt.includes('예매하기') || txt.includes('오픈예정') || txt.includes('한화');
-    },
-    targetDate,
-    { timeout: 10000 }
-  ).catch(() => {});
+  // ─── Method 1: 네트워크 응답 인터셉트 (CDP 레벨 — F12 차단 무관) ───────
+  const responseHandler = async (response) => {
+    try {
+      const url = response.url();
+      if (!url.includes('ticketlink.co.kr')) return;
+      const ct = response.headers()['content-type'] || '';
+      if (!ct.includes('json') && !ct.includes('text') && !ct.includes('javascript')) return;
+      const text = await response.text().catch(() => '');
+      if (!text) return;
+      // /reserve/plan/schedule/{ID}
+      for (const m of text.matchAll(/\/reserve\/plan\/schedule\/(\d{6,})/g)) allCandidates.add(m[1]);
+      // JSON 필드: scheduleId, planScheduleId, scheduleNo, reserveScheduleId
+      for (const m of text.matchAll(/"(?:scheduleId|planScheduleId|scheduleNo|reserveScheduleId|planId)"\s*:\s*"?(\d{6,})"?/gi)) allCandidates.add(m[1]);
+      // querystring: scheduleId=…
+      for (const m of text.matchAll(/[?&]scheduleId=(\d{6,})/g)) allCandidates.add(m[1]);
+    } catch { /* ignore */ }
+  };
 
-  const id = await page.evaluate(({ venue, date }) => {
-    // 모든 a/button 요소에서 reserve/plan/schedule URL 탐색
-    const allEls = document.querySelectorAll('a, button, [data-url], [data-href], [onclick]');
-    for (const el of allEls) {
-      const text = el.closest('li, tr, [class*="item"], [class*="row"]')?.textContent || '';
-      if (!text.includes(venue)) continue;
-      if (date && !text.includes(date)) continue;
+  // ─── 3회 재시도 루프 ──────────────────────────────────────────────────────
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      log(`   🔄 Schedule ID 재시도 ${attempt + 1}/3 (2초 후)...`);
+      await sleep(2000);
+    }
 
-      // href 직접 포함
-      const href = el.href || el.getAttribute('href') || '';
-      const m = href.match(/\/reserve\/plan\/schedule\/(\d+)/);
-      if (m) return m[1];
+    page.on('response', responseHandler);
+    try {
+      await page.goto(SPORTS_PAGE, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    } catch { /* timeout ok */ }
 
-      // data 속성
-      for (const attr of ['data-url', 'data-href', 'data-link', 'data-schedule-id', 'data-id']) {
-        const v = el.getAttribute(attr) || '';
-        const dm = v.match(/(\d{8,})/);
-        if (dm) return dm[1];
+    // JS 렌더링 대기
+    await page.waitForFunction(
+      (date) => {
+        const txt = document.body?.innerText || '';
+        return txt.includes(date) || txt.includes('예매하기') || txt.includes('오픈예정') || txt.includes('한화');
+      },
+      targetDate,
+      { timeout: 10000 }
+    ).catch(() => {});
+    await sleep(1500); // XHR/API 응답 수신 대기
+
+    page.off('response', responseHandler);
+
+    // ─── Method 2: 강화된 DOM 전수 검사 ──────────────────────────────────
+    const domCandidates = await page.evaluate(({ venue, date }) => {
+      const found = new Set();
+
+      // 2-1. 모든 DOM 요소의 모든 속성 스캔
+      for (const el of document.querySelectorAll('*')) {
+        const row = el.closest('li, tr, [class*="item"], [class*="row"], [class*="list"]');
+        const ctx = row?.textContent || el.textContent || '';
+        if (!ctx.includes(venue)) continue;
+        if (date && !ctx.includes(date)) continue;
+
+        for (const attr of el.attributes) {
+          const v = attr.value;
+          // reserve URL 패턴
+          const m1 = v.match(/\/reserve\/plan\/schedule\/(\d{6,})/);
+          if (m1) { found.add(m1[1]); continue; }
+          // data-* 속성에 숫자 ID만 있는 경우
+          if (attr.name.startsWith('data-') && /^\d{7,}$/.test(v.trim())) {
+            found.add(v.trim());
+          }
+        }
+
+        // href / onclick 별도 처리
+        const href = el.getAttribute('href') || '';
+        const m2 = href.match(/\/reserve\/plan\/schedule\/(\d{6,})/);
+        if (m2) found.add(m2[1]);
+
+        const oc = el.getAttribute('onclick') || '';
+        const m3 = oc.match(/\/reserve\/plan\/schedule\/(\d{6,})/);
+        if (m3) found.add(m3[1]);
       }
 
-      // onclick 속성
-      const oc = el.getAttribute('onclick') || '';
-      const om = oc.match(/\/reserve\/plan\/schedule\/(\d+)/);
-      if (om) return om[1];
-    }
+      // 2-2. innerHTML 전체 (script/json 포함) 패턴 검색
+      const html = document.documentElement.innerHTML;
+      for (const m of html.matchAll(/\/reserve\/plan\/schedule\/(\d{6,})/g)) found.add(m[1]);
+      for (const m of html.matchAll(/"(?:scheduleId|planId|scheduleNo)"\s*:\s*"?(\d{6,})"?/gi)) found.add(m[1]);
+      for (const m of html.matchAll(/[?&]scheduleId=(\d{6,})/g)) found.add(m[1]);
 
-    // 페이지 전체 HTML에서 reserve URL 패턴 검색 (script 포함)
-    const html = document.documentElement.innerHTML;
-    const matches = [...html.matchAll(/\/reserve\/plan\/schedule\/(\d+)/g)];
-    // 날짜로 필터링은 어렵지만 중복 제거 후 반환
-    const ids = [...new Set(matches.map((m) => m[1]))];
-    // 가장 큰 ID (최신 경기일 가능성)
-    if (ids.length > 0) {
-      return ids.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
-    }
-    return null;
-  }, { venue: VENUE_NAME, date: targetDate });
+      return [...found];
+    }, { venue: VENUE_NAME, date: targetDate }).catch(() => []);
 
-  if (id) {
-    log(`✅ Schedule ID 발견: ${id}`);
-    return id;
+    for (const id of domCandidates) allCandidates.add(id);
+
+    if (allCandidates.size > 0) {
+      log(`   ✅ 시도 ${attempt + 1}: ${allCandidates.size}개 후보 발견`);
+      break;
+    }
+    log(`   ⚠️  시도 ${attempt + 1}: 후보 없음`);
   }
 
-  log('⚠️  Schedule ID 추출 실패 → 스포츠 페이지 폴링 전략으로 전환');
-  return null;
+  if (allCandidates.size === 0) {
+    log('⚠️  Schedule ID 추출 실패 → 스포츠 페이지 폴링 전략으로 전환');
+    return [];
+  }
+
+  // 큰 숫자 = 더 최근 (일반적으로 최신 경기 ID가 큼)
+  const sorted = [...allCandidates].sort((a, b) => parseInt(b) - parseInt(a));
+  log(`✅ Schedule ID 후보: [${sorted.join(', ')}]`);
+  return sorted;
 }
 
 // ─────────────────────────────────────────────
@@ -330,17 +377,47 @@ async function enterReservePage(page, config) {
 
   const { targetGameDate, openTime, openDate } = config;
 
-  // ── 전략 A: 사전 URL 추출 ──────────────────────
-  const scheduleId = await extractScheduleId(page, targetGameDate);
+  // ── 전략 A: 사전 URL 추출 (복수 후보 순차 시도) ───────────────────────
+  const scheduleIds = await extractScheduleId(page, targetGameDate);
 
-  if (scheduleId) {
-    const reserveUrl = `${RESERVE_BASE}/${scheduleId}?menuIndex=reserve`;
-
+  if (scheduleIds.length > 0) {
     // 오픈 90초 전에 미리 예매 URL 진입 (대기열 + 연결 선점)
     await waitForOpenTime(openTime, PRE_ENTER_LEAD_MS, openDate);
-    log(`🏃 오픈 ${PRE_ENTER_LEAD_MS / 1000}초 전 예매 URL 선점: ${reserveUrl}`);
-    await page.goto(reserveUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+
+    // 첫 번째 후보로 선점 진입
+    let chosenId = scheduleIds[0];
+    const firstUrl = `${RESERVE_BASE}/${chosenId}?menuIndex=reserve`;
+    log(`🏃 오픈 ${PRE_ENTER_LEAD_MS / 1000}초 전 예매 URL 선점: ${firstUrl}`);
+    await page.goto(firstUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
     log(`📍 선점 완료: ${page.url().split('?')[0].split('/').slice(-2).join('/')}`);
+
+    // 선점 후 페이지가 유효한지 확인 (에러 메시지 = 잘못된 ID)
+    const firstValid = await page.evaluate(() => {
+      const txt = document.body?.innerText || '';
+      // 잘못된 경기/날짜: "존재하지 않는", "없는 경기", 404 등
+      if (txt.includes('존재하지 않') || txt.includes('없는 경기') || txt.includes('찾을 수 없')) return false;
+      // URL이 오류 페이지로 리다이렉트됐는지
+      if (document.title.includes('오류') || document.title.includes('Error')) return false;
+      return true;
+    }).catch(() => true);
+
+    if (!firstValid && scheduleIds.length > 1) {
+      log(`⚠️  ID ${chosenId} 유효하지 않음 → 다음 후보 시도`);
+      for (const altId of scheduleIds.slice(1)) {
+        const altUrl = `${RESERVE_BASE}/${altId}?menuIndex=reserve`;
+        log(`   → 후보 ID ${altId} 시도: ${altUrl}`);
+        await page.goto(altUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+        await sleep(800);
+        const valid = await page.evaluate(() => {
+          const txt = document.body?.innerText || '';
+          if (txt.includes('존재하지 않') || txt.includes('없는 경기') || txt.includes('찾을 수 없')) return false;
+          if (document.title.includes('오류') || document.title.includes('Error')) return false;
+          return true;
+        }).catch(() => true);
+        if (valid) { chosenId = altId; log(`   ✅ ID ${altId} 유효 → 선택`); break; }
+        log(`   ❌ ID ${altId} 유효하지 않음`);
+      }
+    }
 
     // 오픈 시각 3.5초 전까지 대기 (이미 예매 페이지에 있는 상태)
     await waitForOpenTime(openTime, OPEN_LEAD_MS, openDate);
@@ -348,6 +425,32 @@ async function enterReservePage(page, config) {
     // 오픈 직후 새로고침으로 예매 활성화
     log('🔄 오픈 직후 새로고침...');
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+
+    // 페이지가 여전히 오픈 전 상태(예매 불가)라면 후보 ID 순환 시도
+    const openedOk = await page.evaluate(() => {
+      const txt = document.body?.innerText || '';
+      // 예매 진입 성공 신호
+      if (txt.includes('예매안내') || txt.includes('보안문자') || txt.includes('좌석') ||
+          txt.includes('내야') || txt.includes('잔디') || txt.includes('응원단')) return true;
+      // 아직 오픈 전 페이지 — 스포츠 페이지로 폴링 전환 신호
+      return false;
+    }).catch(() => false);
+
+    if (!openedOk && scheduleIds.length > 1) {
+      log('⚠️  첫 번째 ID로 예매 미진입 → 나머지 후보 ID 순환 시도');
+      for (const altId of scheduleIds.filter(id => id !== chosenId)) {
+        const altUrl = `${RESERVE_BASE}/${altId}?menuIndex=reserve`;
+        log(`   → 후보 ID ${altId}: ${altUrl}`);
+        await page.goto(altUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+        await sleep(500);
+        const ok = await page.evaluate(() => {
+          const txt = document.body?.innerText || '';
+          return txt.includes('예매안내') || txt.includes('보안문자') || txt.includes('좌석') ||
+                 txt.includes('내야') || txt.includes('잔디');
+        }).catch(() => false);
+        if (ok) { log(`   ✅ ID ${altId} 예매 진입 성공`); break; }
+      }
+    }
 
     // 예매안내 팝업 처리 (없으면 자동 통과)
     await handleConfirmPopup(page, '예매안내', 8000);
