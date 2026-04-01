@@ -421,17 +421,18 @@ async function pollAndClickBookingButton(page, targetDate, openTime = 'now', ope
 
   // 새로고침 후 페이지 로드 중 예매하기 버튼이 나타나는 즉시 클릭
   // 완전 로드 기다리지 않음 → 로드 루프 방지
-  const reloadAndClickWhenReady = async (label) => {
-    log(`   🔄 ${label} → 새로고침 후 버튼 즉시 감지 대기`);
+  // 새로고침 후 버튼이 나타날 때까지 최대 waitMs 대기 후 즉시 클릭
+  const reloadAndClickWhenReady = async (label, waitMs = 10000) => {
+    log(`   🔄 ${label} → 새로고침`);
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
     const btn = activeBtnLocator();
-    const appeared = await btn.waitFor({ state: 'visible', timeout: 10000 })
+    const appeared = await btn.waitFor({ state: 'visible', timeout: waitMs })
       .then(() => true).catch(() => false);
     if (!appeared) return false;
     const disabled = await btn.isDisabled().catch(() => false);
     const text = await btn.textContent().catch(() => '');
     if (disabled || text.includes('오픈') || text.includes('예정')) return false;
-    log('   ✅ 로드 중 예매하기 버튼 감지 → 즉시 클릭');
+    log('   ✅ 예매하기 버튼 감지 → 즉시 클릭');
     await btn.click().catch(() => {});
     return await page.waitForSelector('.common_modal[role="dialog"]', { timeout: 3000 })
       .then(() => true).catch(() => false);
@@ -454,7 +455,7 @@ async function pollAndClickBookingButton(page, targetDate, openTime = 'now', ope
       const visible = await btn.isVisible().catch(() => false);
 
       if (!visible) {
-        // "오픈예정" 버튼 확인 → 정각까지 대기 후 새로고침 1회 (루프 방지)
+        // "오픈예정" 버튼 감지 → 정각까지 대기 후 새로고침 1회만
         if (!openTimeReloadDone) {
           const pendingVisible = await page.locator('li, tr')
             .filter({ hasText: targetDate })
@@ -469,13 +470,25 @@ async function pollAndClickBookingButton(page, targetDate, openTime = 'now', ope
             log(`   [${attempt + 1}] 오픈예정 확인 → 정각(${openTime})까지 대기`);
             await waitForOpenTime(openTime, 0, openDate);
             openTimeReloadDone = true;
-            const success = await reloadAndClickWhenReady('정각 도달');
+            // 피크타임 대응: 버튼 대기를 30초로 충분히 확보 (페이지 느려도 버팀)
+            const success = await reloadAndClickWhenReady('정각 도달', 30000);
             if (success) { log('✅ 예매하기 클릭 성공 (정각 새로고침)'); break; }
+            // 30초 대기 후에도 버튼 미감지 → 한 번 더 reload 시도
+            log('   ⚠️  30초 대기 후 버튼 미감지 → 재시도');
+            const retry = await reloadAndClickWhenReady('재시도', 20000);
+            if (retry) { log('✅ 예매하기 클릭 성공 (재시도)'); break; }
             continue;
           }
         }
 
-        // 버튼 자체가 없음 → 피크타임 대응 (2번 대기, 3번째 새로고침)
+        // openTimeReloadDone 이후 버튼 없음 → 현재 페이지에서 버튼 대기 (reload 안 함)
+        if (openTimeReloadDone) {
+          log(`   [${attempt + 1}] 로딩 중 대기...`);
+          await sleep(1500);
+          continue;
+        }
+
+        // 오픈 전 / 일반 상황: 3번에 1번꼴로 reload
         if (attempt % 3 === 2) {
           const success = await reloadAndClickWhenReady(`[${attempt + 1}] 버튼 없음`);
           if (success) { log('✅ 예매하기 클릭 성공 (재로드)'); break; }
