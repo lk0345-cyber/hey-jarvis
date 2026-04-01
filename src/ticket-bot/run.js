@@ -1,5 +1,11 @@
 'use strict';
 
+// Ctrl+C: 봇 중단, 브라우저는 열어둠
+process.on('SIGINT', () => {
+  process.stdout.write('\n⏹  봇 중단 — 브라우저는 그대로 열려있습니다. 직접 이어서 진행하세요.\n');
+  process.exit(0);
+});
+
 require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
 
 const { runTicketBot } = require('./ticketlink');
