@@ -27,8 +27,12 @@ const VENUE_NAME = '대전 한화생명 볼파크';
 // 유틸
 // ─────────────────────────────────────────────
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+async function sleep(ms) {
+  await new Promise((r) => setTimeout(r, ms));
+  // P 키 일시정지 중이면 재개될 때까지 대기
+  while (global.botPaused) {
+    await new Promise((r) => setTimeout(r, 300));
+  }
 }
 
 function log(msg) {

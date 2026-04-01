@@ -7,6 +7,24 @@ process.on('SIGINT', () => {
   process.kill(process.pid, 'SIGKILL');
 });
 
+// P 키: 봇 일시정지 / 재개 (Chrome은 계속 열려있음)
+global.botPaused = false;
+try {
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (key) => {
+    if (key === 'p' || key === 'P') {
+      global.botPaused = !global.botPaused;
+      if (global.botPaused) {
+        process.stdout.write('\n⏸  일시정지 — 직접 Chrome에서 진행하세요. 재개하려면 P를 누르세요.\n');
+      } else {
+        process.stdout.write('\n▶  봇 재개\n');
+      }
+    }
+  });
+} catch { /* TTY 아닌 환경에서는 무시 */ }
+
 require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
 
 const { runTicketBot } = require('./ticketlink');
