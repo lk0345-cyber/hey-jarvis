@@ -188,8 +188,7 @@ async function extractScheduleId(page, targetDate) {
 // ─────────────────────────────────────────────
 
 // 페이지 로딩 선행 시간 (ms) — 정각 이 시간 전에 새로고침/진입
-// 10:59:28 = 정각 32초 전 (페이지 로딩 여유 확보)
-const OPEN_LEAD_MS = 32000;
+const OPEN_LEAD_MS = 3500;
 // 오픈 전 예매 URL 선점 진입 시간 (ms)
 const PRE_ENTER_LEAD_MS = 90000; // 90초 전
 
@@ -387,18 +386,40 @@ async function reloadAndWait(page) {
 async function pollAndClickBookingButton(page, targetDate, openTime = 'now', openDate = '') {
   log('⚡ 예매하기 버튼 폴링 시작...');
 
-  // 초기 페이지 로드 대기
   await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
   await page.waitForFunction(
     () => (document.body?.innerText?.length || 0) > 200,
     { timeout: 10000 }
   ).catch(() => {});
 
-  // "오픈예정" 대기 후 정각 새로고침은 1회만 수행
+  const activeBtnLocator = () => page.locator('li, tr')
+    .filter({ hasText: targetDate })
+    .filter({ hasText: VENUE_NAME })
+    .locator('a:has-text("예매하기"), button:has-text("예매하기")')
+    .first();
+
+  // 새로고침 후 페이지 로드 중 예매하기 버튼이 나타나는 즉시 클릭
+  // 완전 로드 기다리지 않음 → 로드 루프 방지
+  const reloadAndClickWhenReady = async (label) => {
+    log(`   🔄 ${label} → 새로고침 후 버튼 즉시 감지 대기`);
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+    const btn = activeBtnLocator();
+    const appeared = await btn.waitFor({ state: 'visible', timeout: 10000 })
+      .then(() => true).catch(() => false);
+    if (!appeared) return false;
+    const disabled = await btn.isDisabled().catch(() => false);
+    const text = await btn.textContent().catch(() => '');
+    if (disabled || text.includes('오픈') || text.includes('예정')) return false;
+    log('   ✅ 로드 중 예매하기 버튼 감지 → 즉시 클릭');
+    await btn.click().catch(() => {});
+    return await page.waitForSelector('.common_modal[role="dialog"]', { timeout: 3000 })
+      .then(() => true).catch(() => false);
+  };
+
+  // "오픈예정" 감지 후 정각 새로고침은 1회만
   let openTimeReloadDone = false;
 
   for (let attempt = 0; attempt < 60; attempt++) {
-    // 팝업이 이미 나타났으면 즉시 중단
     const popupVisible = await page.evaluate(() =>
       !!document.querySelector('.common_modal[role="dialog"]')
     ).catch(() => false);
@@ -408,15 +429,11 @@ async function pollAndClickBookingButton(page, targetDate, openTime = 'now', ope
     }
 
     try {
-      const btn = page.locator('li, tr')
-        .filter({ hasText: targetDate })
-        .filter({ hasText: VENUE_NAME })
-        .locator('a:has-text("예매하기"), button:has-text("예매하기")')
-        .first();
-
+      const btn = activeBtnLocator();
       const visible = await btn.isVisible().catch(() => false);
+
       if (!visible) {
-        // "오픈예정" 회색 버튼이 있으면 → 정각까지 대기 후 새로고침 1회 (루프 방지)
+        // "오픈예정" 버튼 확인 → 정각까지 대기 후 새로고침 1회 (루프 방지)
         if (!openTimeReloadDone) {
           const pendingVisible = await page.locator('li, tr')
             .filter({ hasText: targetDate })
@@ -428,20 +445,19 @@ async function pollAndClickBookingButton(page, targetDate, openTime = 'now', ope
             .catch(() => false);
 
           if (pendingVisible) {
-            log(`   [${attempt + 1}] 오픈예정 확인 → 정각(${openTime})까지 대기 후 새로고침 1회`);
-            await waitForOpenTime(openTime, 0, openDate); // 정각까지 대기
-            log('   🔄 정각 도달 → 새로고침');
-            await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-            await sleep(300);
+            log(`   [${attempt + 1}] 오픈예정 확인 → 정각(${openTime})까지 대기`);
+            await waitForOpenTime(openTime, 0, openDate);
             openTimeReloadDone = true;
+            const success = await reloadAndClickWhenReady('정각 도달');
+            if (success) { log('✅ 예매하기 클릭 성공 (정각 새로고침)'); break; }
             continue;
           }
         }
 
-        // 피크타임 대응: 2번은 대기만, 3번째마다 새로고침
+        // 버튼 자체가 없음 → 피크타임 대응 (2번 대기, 3번째 새로고침)
         if (attempt % 3 === 2) {
-          log(`   [${attempt + 1}] 버튼 없음 → 새로고침`);
-          await reloadAndWait(page);
+          const success = await reloadAndClickWhenReady(`[${attempt + 1}] 버튼 없음`);
+          if (success) { log('✅ 예매하기 클릭 성공 (재로드)'); break; }
         } else {
           log(`   [${attempt + 1}] 버튼 없음 → 대기 중 (${attempt % 3 + 1}/3)...`);
           await sleep(2000);
@@ -453,8 +469,8 @@ async function pollAndClickBookingButton(page, targetDate, openTime = 'now', ope
       const text = await btn.textContent().catch(() => '');
       if (disabled || text.includes('오픈') || text.includes('예정')) {
         if (attempt % 3 === 2) {
-          log(`   [${attempt + 1}] 버튼 비활성 → 새로고침`);
-          await reloadAndWait(page);
+          const success = await reloadAndClickWhenReady(`[${attempt + 1}] 버튼 비활성`);
+          if (success) { log('✅ 예매하기 클릭 성공 (재로드)'); break; }
         } else {
           log(`   [${attempt + 1}] 버튼 비활성 → 대기 중...`);
           await sleep(1500);
@@ -479,7 +495,6 @@ async function pollAndClickBookingButton(page, targetDate, openTime = 'now', ope
         log(`✅ 예매하기 클릭 성공 (${attempt + 1}번째 시도) → 팝업 감지`);
         break;
       }
-      // 팝업 미감지 → 재시도
       await reloadAndWait(page);
     } catch {
       await reloadAndWait(page);
