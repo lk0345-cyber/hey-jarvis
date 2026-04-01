@@ -145,12 +145,9 @@ async function extractScheduleId(page, targetDate) {
     } catch { /* ignore */ }
   };
 
-  // ─── 3회 재시도 루프 ──────────────────────────────────────────────────────
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt > 0) {
-      log(`   🔄 Schedule ID 재시도 ${attempt + 1}/3 (2초 후)...`);
-      await sleep(2000);
-    }
+  // ─── 1회 시도 (재시도 없음 — 실패 시 즉시 전략 B) ────────────────────────
+  {
+    const attempt = 0;
 
     page.on('response', responseHandler);
     try {
@@ -163,9 +160,9 @@ async function extractScheduleId(page, targetDate) {
         return txt.includes(date) || txt.includes('예매하기') || txt.includes('오픈예정') || txt.includes('한화');
       },
       targetDate,
-      { timeout: 10000 }
+      { timeout: 8000 }
     ).catch(() => {});
-    await sleep(1500);
+    await sleep(1000);
 
     page.off('response', responseHandler);
 
@@ -222,29 +219,16 @@ async function extractScheduleId(page, targetDate) {
     }, { venue: VENUE_NAME, date: targetDate }).catch(() => []);
 
     for (const id of domFiltered) dateCandidates.add(id);
-
-    if (dateCandidates.size > 0) {
-      log(`   ✅ 시도 ${attempt + 1}: 날짜 필터 후보 ${dateCandidates.size}개`);
-      break;
-    }
-    log(`   ⚠️  시도 ${attempt + 1}: 날짜 필터 후보 없음`);
   }
 
-  // 날짜 필터 후보가 있으면 그것만 반환
-  // 없으면 네트워크 수집 전체를 폴백으로 반환 (큰 ID 우선)
   if (dateCandidates.size > 0) {
     const sorted = [...dateCandidates].sort((a, b) => parseInt(b) - parseInt(a));
     log(`✅ Schedule ID (날짜 확정): [${sorted.join(', ')}]`);
     return sorted;
   }
 
-  if (netCandidates.size > 0) {
-    const sorted = [...netCandidates].sort((a, b) => parseInt(b) - parseInt(a));
-    log(`⚠️  날짜 필터 실패 → 네트워크 수집 폴백 ${sorted.length}개: [${sorted.slice(0, 5).join(', ')}${sorted.length > 5 ? '...' : ''}]`);
-    return sorted;
-  }
-
-  log('⚠️  Schedule ID 추출 실패 → 스포츠 페이지 폴링 전략으로 전환');
+  // 날짜 필터 실패 → 전략 B로 전환 (네트워크 폴백은 신뢰도 낮아서 사용 안 함)
+  log('⚠️  Schedule ID 미발견 → 스포츠 페이지 폴링 전략으로 전환');
   return [];
 }
 
