@@ -215,13 +215,27 @@ async function waitForOpenTime(openTimeStr, leadMs = OPEN_LEAD_MS, openDate = ''
     return;
   }
 
-  log(`⏱  오픈까지 ${Math.round((waitMs + leadMs) / 1000)}초 대기 → ${openTimeStr} 기준 ${leadMs / 1000}초 선행`);
+  const fmtMs = (ms) => {
+    const tot = Math.round(ms / 1000);
+    const h = Math.floor(tot / 3600), m = Math.floor((tot % 3600) / 60), s = tot % 60;
+    return h > 0 ? `${h}시간 ${m}분 ${s}초` : m > 0 ? `${m}분 ${s}초` : `${s}초`;
+  };
+  log(`⏱  오픈까지 ${fmtMs(waitMs + leadMs)} 대기 → ${openDate ? openDate + ' ' : ''}${openTimeStr}`);
 
-  if (waitMs > 31000) await sleep(waitMs - 30000);
+  if (waitMs > 31000) {
+    // 30초 전까지 1분마다 남은 시간 출력
+    let bulk = waitMs - 30000;
+    while (bulk > 60000) {
+      await sleep(60000);
+      bulk -= 60000;
+      log(`⏳ 오픈까지 ${fmtMs(bulk + 30000)} 남음`);
+    }
+    await sleep(bulk);
+  }
 
   let remaining = Math.min(waitMs, 30000);
   while (remaining > 1000) {
-    process.stdout.write(`\r⏱  ${Math.round(remaining / 1000)}초 남음...   `);
+    process.stdout.write(`\r⏱  ${fmtMs(remaining)} 남음...   `);
     await sleep(1000);
     remaining -= 1000;
   }
