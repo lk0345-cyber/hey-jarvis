@@ -1215,6 +1215,10 @@ async function selectSeat(page, config) {
     return false;
   }, null, { timeout: 40000 }).catch(() => log('⚠️  좌석화면 로드 대기 timeout → 그대로 진행'));
   log('🗺️  좌석 선택 화면 로드 완료');
+  // 페이지 축소 — 다음단계 버튼이 화면 안에 들어오도록
+  await page.evaluate(() => {
+    document.documentElement.style.zoom = '0.75';
+  }).catch(() => {});
   await sleep(1000);
 
   // 1순위 + 폴백 순서대로 시도
