@@ -393,8 +393,27 @@ async function pollAndClickBookingButton(page, targetDate) {
     { timeout: 10000 }
   ).catch(() => {});
 
+  const findBtn = () => page.locator('li, tr')
+    .filter({ hasText: targetDate })
+    .filter({ hasText: VENUE_NAME })
+    .locator('a:has-text("예매하기"), button:has-text("예매하기")')
+    .first();
+
+  // "구매할 수 없는 상품" 등 오픈 전 오류 팝업 닫기
+  const dismissErrorPopup = async () => {
+    await page.evaluate(() => {
+      const modal = document.querySelector('.common_modal[role="dialog"]');
+      if (!modal) return;
+      const txt = modal.innerText || '';
+      if (txt.includes('구매할 수 없') || txt.includes('판매 전') || txt.includes('오픈 예정')) {
+        const btn = modal.querySelector('button');
+        if (btn) btn.click();
+      }
+    }).catch(() => {});
+  };
+
   for (let attempt = 0; attempt < 60; attempt++) {
-    // 팝업이 이미 나타났으면 즉시 중단
+    // 예매 팝업 감지 → 성공
     const popupVisible = await page.evaluate(() =>
       !!document.querySelector('.common_modal[role="dialog"]')
     ).catch(() => false);
@@ -403,62 +422,65 @@ async function pollAndClickBookingButton(page, targetDate) {
       break;
     }
 
-    try {
-      const btn = page.locator('li, tr')
-        .filter({ hasText: targetDate })
-        .filter({ hasText: VENUE_NAME })
-        .locator('a:has-text("예매하기"), button:has-text("예매하기")')
-        .first();
-
-      const visible = await btn.isVisible().catch(() => false);
-      if (!visible) {
-        // 피크타임 대응: 2번은 대기만, 3번째마다 새로고침 (너무 잦은 새로고침 방지)
-        if (attempt % 3 === 2) {
-          log(`   [${attempt + 1}] 버튼 없음 → 새로고침`);
-          await reloadAndWait(page);
-        } else {
-          log(`   [${attempt + 1}] 버튼 없음 → 대기 중 (${attempt % 3 + 1}/3)...`);
-          await sleep(2000);
-        }
-        continue;
+    const btn = findBtn();
+    const visible = await btn.isVisible().catch(() => false);
+    if (!visible) {
+      if (attempt % 3 === 2) {
+        log(`   [${attempt + 1}] 버튼 없음 → 새로고침`);
+        await reloadAndWait(page);
+      } else {
+        log(`   [${attempt + 1}] 버튼 없음 → 대기 중 (${attempt % 3 + 1}/3)...`);
+        await sleep(2000);
       }
+      continue;
+    }
 
-      const disabled = await btn.isDisabled().catch(() => false);
-      const text = await btn.textContent().catch(() => '');
-      if (disabled || text.includes('오픈') || text.includes('예정')) {
-        // 오픈 전 대기 중: 짧은 간격으로 반복 (새로고침은 3번에 1번)
-        if (attempt % 3 === 2) {
-          log(`   [${attempt + 1}] 버튼 비활성 → 새로고침`);
-          await reloadAndWait(page);
-        } else {
-          log(`   [${attempt + 1}] 버튼 비활성 → 대기 중...`);
-          await sleep(1500);
+    // 버튼이 보이면 활성화 여부 관계없이 즉시 연속 클릭
+    // 오픈 전 클릭 → "구매할 수 없는 상품입니다" 팝업 → 닫고 재클릭
+    await btn.scrollIntoViewIfNeeded().catch(() => {});
+    const box = await btn.boundingBox().catch(() => null);
+    if (!box) { await reloadAndWait(page); continue; }
+    const cx = Math.round(box.x + box.width / 2);
+    const cy = Math.round(box.y + box.height / 2);
+
+    log(`   [${attempt + 1}] 예매하기 버튼 발견 → 연속 클릭 시작`);
+    let success = false;
+
+    for (let ci = 0; ci < 200; ci++) {
+      await page.mouse.click(cx, cy);
+      await sleep(80);
+
+      const result = await page.evaluate(() => {
+        if (document.querySelector('.common_modal[role="dialog"]')) {
+          const txt = document.querySelector('.common_modal[role="dialog"]')?.innerText || '';
+          if (txt.includes('구매할 수 없') || txt.includes('판매 전') || txt.includes('오픈 예정'))
+            return 'too_early';
+          return 'popup'; // 예매안내 팝업 = 성공
         }
-        continue;
-      }
+        if (location.pathname.includes('/reserve/')) return 'reserve';
+        return 'retry';
+      }).catch(() => 'retry');
 
-      await btn.scrollIntoViewIfNeeded();
-      const box = await btn.boundingBox().catch(() => null);
-      if (!box) { await reloadAndWait(page); continue; }
-
-      log(`   [${attempt + 1}] 예매하기 버튼 활성 → 클릭`);
-      await page.mouse.move(box.x + box.width / 2 - 120, box.y + box.height / 2 + 40);
-      await sleep(40);
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 12 });
-      await sleep(60);
-      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-
-      const appeared = await page.waitForSelector('.common_modal[role="dialog"]', { timeout: 3000 })
-        .then(() => true).catch(() => false);
-      if (appeared) {
-        log(`✅ 예매하기 클릭 성공 (${attempt + 1}번째 시도) → 팝업 감지`);
+      if (result === 'popup' || result === 'reserve') {
+        log(`   ✅ 클릭 성공! (${ci + 1}번 클릭)`);
+        success = true;
         break;
       }
-      // 팝업 미감지 → 재시도
-      await reloadAndWait(page);
-    } catch {
-      await reloadAndWait(page);
+      if (result === 'too_early') {
+        if (ci % 20 === 0) log(`   ⏳ [${ci + 1}] 오픈 전 클릭 중... (서버 거부 → 재클릭)`);
+        await dismissErrorPopup();
+        await sleep(20);
+        continue;
+      }
+      // retry: 팝업도 없고 페이지 이동도 없음 → 버튼 재탐색
+      const stillVisible = await findBtn().isVisible().catch(() => false);
+      if (!stillVisible) break; // 페이지 변경됨, 바깥 루프로
     }
+
+    if (success) break;
+    if (!await findBtn().isVisible().catch(() => false)) continue; // 재탐색
+    log(`   ↩️ 클릭 한계 초과 → 새로고침`);
+    await reloadAndWait(page);
   }
 
   await handleConfirmPopup(page, '예매안내', 10000);
