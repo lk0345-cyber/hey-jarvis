@@ -187,8 +187,9 @@ async function extractScheduleId(page, targetDate) {
 // 전략 B: 정시 폴링 (100ms 간격)
 // ─────────────────────────────────────────────
 
-// 페이지 로딩 선행 시간 (ms) — 11시 정각보다 이 만큼 먼저 폴링 시작
-const OPEN_LEAD_MS = 3500;
+// 페이지 로딩 선행 시간 (ms) — 정각 이 시간 전에 새로고침/진입
+// 10:59:28 = 정각 32초 전 (페이지 로딩 여유 확보)
+const OPEN_LEAD_MS = 32000;
 // 오픈 전 예매 URL 선점 진입 시간 (ms)
 const PRE_ENTER_LEAD_MS = 90000; // 90초 전
 
@@ -356,7 +357,7 @@ async function enterReservePage(page, config) {
     log('📍 스포츠 페이지 폴링 전략');
     await page.goto(SPORTS_PAGE, { waitUntil: 'domcontentloaded' });
     await waitForOpenTime(openTime, OPEN_LEAD_MS, openDate);
-    await pollAndClickBookingButton(page, targetGameDate);
+    await pollAndClickBookingButton(page, targetGameDate, openTime, openDate);
   }
 
   // 대기열 처리 (runTicketBot에서 팝업과 병렬 실행)
@@ -383,7 +384,7 @@ async function reloadAndWait(page) {
   await sleep(300);
 }
 
-async function pollAndClickBookingButton(page, targetDate) {
+async function pollAndClickBookingButton(page, targetDate, openTime = 'now', openDate = '') {
   log('⚡ 예매하기 버튼 폴링 시작...');
 
   // 초기 페이지 로드 대기
@@ -392,6 +393,9 @@ async function pollAndClickBookingButton(page, targetDate) {
     () => (document.body?.innerText?.length || 0) > 200,
     { timeout: 10000 }
   ).catch(() => {});
+
+  // "오픈예정" 대기 후 정각 새로고침은 1회만 수행
+  let openTimeReloadDone = false;
 
   for (let attempt = 0; attempt < 60; attempt++) {
     // 팝업이 이미 나타났으면 즉시 중단
@@ -412,7 +416,29 @@ async function pollAndClickBookingButton(page, targetDate) {
 
       const visible = await btn.isVisible().catch(() => false);
       if (!visible) {
-        // 피크타임 대응: 2번은 대기만, 3번째마다 새로고침 (너무 잦은 새로고침 방지)
+        // "오픈예정" 회색 버튼이 있으면 → 정각까지 대기 후 새로고침 1회 (루프 방지)
+        if (!openTimeReloadDone) {
+          const pendingVisible = await page.locator('li, tr')
+            .filter({ hasText: targetDate })
+            .filter({ hasText: VENUE_NAME })
+            .locator('button, a, span, td')
+            .filter({ hasText: /오픈예정|오픈 예정/ })
+            .first()
+            .isVisible()
+            .catch(() => false);
+
+          if (pendingVisible) {
+            log(`   [${attempt + 1}] 오픈예정 확인 → 정각(${openTime})까지 대기 후 새로고침 1회`);
+            await waitForOpenTime(openTime, 0, openDate); // 정각까지 대기
+            log('   🔄 정각 도달 → 새로고침');
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+            await sleep(300);
+            openTimeReloadDone = true;
+            continue;
+          }
+        }
+
+        // 피크타임 대응: 2번은 대기만, 3번째마다 새로고침
         if (attempt % 3 === 2) {
           log(`   [${attempt + 1}] 버튼 없음 → 새로고침`);
           await reloadAndWait(page);
@@ -426,7 +452,6 @@ async function pollAndClickBookingButton(page, targetDate) {
       const disabled = await btn.isDisabled().catch(() => false);
       const text = await btn.textContent().catch(() => '');
       if (disabled || text.includes('오픈') || text.includes('예정')) {
-        // 오픈 전 대기 중: 짧은 간격으로 반복 (새로고침은 3번에 1번)
         if (attempt % 3 === 2) {
           log(`   [${attempt + 1}] 버튼 비활성 → 새로고침`);
           await reloadAndWait(page);
