@@ -291,8 +291,8 @@ async function waitForOpenTime(openTimeStr, leadMs = OPEN_LEAD_MS, openDate = ''
     return;
   }
 
-  // 서버 시간 기준 현재 시각 (로컬 + 오프셋)
-  const now = new Date(Date.now() + serverTimeOffset);
+  // 로컬 시간 기준 (서버 오프셋 미적용 — 정각에 새로고침)
+  const now = new Date(Date.now());
   const [h, m, s] = openTimeStr.split(':').map(Number);
   const target = new Date(now);
   target.setHours(h, m, s, 0);
@@ -638,7 +638,7 @@ async function handleConfirmPopup(page, label = '', timeout = 10000) {
 // ─────────────────────────────────────────────
 
 async function waitForCaptchaDone(page) {
-  const deadline = Date.now() + 120000; // 최대 2분
+  const deadline = Date.now() + 1200000; // 최대 20분
   let lastProgressLog = Date.now();
   let captchaLogged = false;
 
